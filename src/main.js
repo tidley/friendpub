@@ -103,11 +103,22 @@ $('genGuardian').onclick = () => { $('guardianNsec').value = genKeyPair().nsec; 
 $('refreshGuardian').onclick = async () => {
   const skHex = toHex($('guardianNsec').value.trim());
   const filterNpub = $('guardianFilterNpub').value.trim();
+  const filterNonce = $('guardianFilterNonce').value.trim();
   const inbox = await fetchNip17Inbox(relays(), skHex, genPub(skHex), Math.floor(Date.now() / 1000) - 86400);
 
   let reqs = inbox
     .filter((m) => m.json?.type === 'rotation-request')
-    .filter((m) => !filterNpub || m.json?.new_npub === filterNpub || m.json?.old_npub === filterNpub);
+    .map((m) => ({
+      ...m,
+      json: {
+        ...m.json,
+        old_npub: (m.json?.old_npub || '').trim(),
+        new_npub: (m.json?.new_npub || '').trim(),
+        nonce: (m.json?.nonce || '').trim(),
+      },
+    }))
+    .filter((m) => !filterNpub || m.json?.new_npub === filterNpub || m.json?.old_npub === filterNpub)
+    .filter((m) => !filterNonce || m.json?.nonce === filterNonce);
 
   // keep only the latest matching request to avoid stale spam
   reqs = reqs.sort((a, b) => (b.wrap?.created_at || 0) - (a.wrap?.created_at || 0));
