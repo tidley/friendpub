@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 const hexToBytes = (h) => Uint8Array.from(h.match(/.{1,2}/g).map((b) => parseInt(b, 16)));
 const genPub = (skHex) => getPublicKey(hexToBytes(skHex));
 
-const state = { req: { partials: [], request: null, policy: null, proof: null }, guardianReqs: [] };
+const state = { req: { partials: [], partialMsgs: [], request: null, policy: null, proof: null }, guardianReqs: [] };
 const setStatus = (x) => ($('status').textContent = x);
 const relays = () => $('relays').value.split(',').map((x) => x.trim()).filter(Boolean);
 
@@ -41,42 +41,48 @@ $('sendReq').onclick = async () => {
 $('refreshReq').onclick = async () => {
   const skHex = toHex($('newNsec').value.trim());
   const inbox = await fetchNip17Inbox(relays(), skHex, genPub(skHex), Math.floor(Date.now() / 1000) - 86400);
-  const req = state.req.request;
 
-  if (!req) {
-    setStatus('no active request: send rotation request first');
-    state.req.partials = [];
-    $('partials').textContent = '[]';
-    return;
-  }
+  const partialMsgs = inbox
+    .filter((m) => m.json?.type === 'rotation-partial' && Number.isInteger(m.json?.partial?.id))
+    .map((m) => ({
+      old_npub: (m.json?.old_npub || '').trim(),
+      new_npub: (m.json?.new_npub || '').trim(),
+      nonce: (m.json?.nonce || '').trim(),
+      partial: m.json.partial,
+      created_at: m.wrap?.created_at || 0,
+    }))
+    .sort((a, b) => b.created_at - a.created_at);
 
-  const matching = inbox.filter((m) => {
-    const j = m.json;
-    return j?.type === 'rotation-partial'
-      && j.old_npub === req.old_npub
-      && j.new_npub === req.new_npub
-      && j.nonce === req.nonce
-      && Number.isInteger(j.partial?.id);
-  });
-
-  // Dedupe by guardian id: keep most recent message per guardian.
-  const byGuardian = new Map();
-  for (const m of matching) {
-    const gid = m.json.partial.id;
-    const ts = m.wrap?.created_at || 0;
-    const prev = byGuardian.get(gid);
-    if (!prev || ts >= prev.ts) byGuardian.set(gid, { ts, partial: m.json.partial });
-  }
-
-  state.req.partials = [...byGuardian.values()].map((x) => x.partial).sort((a, b) => a.id - b.id);
-  $('partials').textContent = JSON.stringify(state.req.partials, null, 2);
-  setStatus(`partials loaded: ${state.req.partials.length} unique guardian(s)`);
+  // show all inbound partials (no dedupe, no strict tuple filter)
+  state.req.partialMsgs = partialMsgs;
+  state.req.partials = partialMsgs.map((m) => m.partial);
+  $('partials').textContent = JSON.stringify(partialMsgs, null, 2);
+  setStatus(`partials loaded: ${partialMsgs.length} inbound message(s)`);
 };
 
 $('aggregate').onclick = () => {
-  const { request, policy, partials } = state.req;
-  if (!request || !policy || partials.length < 2) return setStatus('need request + >=2 partials');
-  const picked = partials.slice(0, 2);
+  const { request, policy, partialMsgs } = state.req;
+  if (!request || !policy) return setStatus('need request + policy');
+
+  const matching = (partialMsgs || []).filter((m) =>
+    m.old_npub === (request.old_npub || '').trim()
+    && m.new_npub === (request.new_npub || '').trim()
+    && m.nonce === (request.nonce || '').trim()
+  );
+
+  // for aggregation, keep one partial per guardian id (latest first list already sorted)
+  const seen = new Set();
+  const picked = [];
+  for (const m of matching) {
+    const id = m.partial?.id;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    picked.push(m.partial);
+    if (picked.length >= 2) break;
+  }
+
+  if (picked.length < 2) return setStatus('need >=2 matching guardian partials for current request');
+
   const signature = aggregate(request, picked, policy.groupPubkey);
   state.req.proof = {
     type: 'rotation-proof',
