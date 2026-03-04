@@ -32,6 +32,15 @@ npm run dev
 
 Open local URL from Vite.
 
+Default relay set in UI is now:
+- `wss://nos.lol`
+- `wss://relay.primal.net`
+- `wss://relay.snort.social`
+- `wss://relay.nostr.band`
+- `wss://purplepag.es`
+
+If one relay is blocked/unreachable (e.g. regional/network issues), keep multiple relays enabled.
+
 ## Fast demo flow
 
 1. Click **Run scripted demo**.
