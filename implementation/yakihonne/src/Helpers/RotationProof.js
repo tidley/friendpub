@@ -56,13 +56,32 @@ export const buildRotationPartial = (req, share) => {
 
 export const parseRotationRequest = (raw) => {
   try {
-    const j = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (j?.type !== "rotation-request") return null;
+    let candidate = raw;
+    if (typeof candidate !== "string" && typeof candidate !== "object") return null;
+
+    if (typeof candidate === "string") {
+      const s = candidate.trim();
+      // try whole string JSON
+      try {
+        candidate = JSON.parse(s);
+      } catch {
+        // fallback: extract first JSON object block
+        const start = s.indexOf("{");
+        const end = s.lastIndexOf("}");
+        if (start >= 0 && end > start) {
+          candidate = JSON.parse(s.slice(start, end + 1));
+        } else {
+          return null;
+        }
+      }
+    }
+
+    if (candidate?.type !== "rotation-request") return null;
     return {
-      ...j,
-      old_npub: (j.old_npub || "").trim(),
-      new_npub: (j.new_npub || "").trim(),
-      nonce: (j.nonce || "").trim(),
+      ...candidate,
+      old_npub: (candidate.old_npub || "").trim(),
+      new_npub: (candidate.new_npub || "").trim(),
+      nonce: (candidate.nonce || "").trim(),
     };
   } catch {
     return null;

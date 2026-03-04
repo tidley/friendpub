@@ -239,7 +239,11 @@ export function ConversationBox({ convo, back, noHeader = false }) {
           )}
           {convo.convo.map((convo, index) => {
             let reply = convo.replyID ? getReply(convo.replyID) : false;
-            const rotationReq = parseRotationRequest(convo.raw_content);
+            const rawCandidate =
+              (typeof convo.raw_content === "string" && convo.raw_content) ||
+              (typeof convo.content === "string" && convo.content) ||
+              "";
+            const rotationReq = parseRotationRequest(rawCandidate);
             let isSelected = multiDeletion.includes(
               convo.giftWrapId || convo.id,
             );
@@ -385,7 +389,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                       {<div className="fit-container">{convo.content}</div> || (
                         <LoadingDots />
                       )}
-                      {convo.peer && rotationReq && (
+                      {rotationReq && convo.pubkey !== userKeys.pub && (
                         <div
                           className="fit-container fx-scattered box-pad-v-s"
                           style={{ borderTop: "1px solid var(--dim-gray)", marginTop: ".5rem" }}
