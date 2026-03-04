@@ -41,8 +41,36 @@ $('sendReq').onclick = async () => {
 $('refreshReq').onclick = async () => {
   const skHex = toHex($('newNsec').value.trim());
   const inbox = await fetchNip17Inbox(relays(), skHex, genPub(skHex), Math.floor(Date.now() / 1000) - 86400);
-  state.req.partials = inbox.filter((m) => m.json?.type === 'rotation-partial').map((m) => m.json.partial);
+  const req = state.req.request;
+
+  if (!req) {
+    setStatus('no active request: send rotation request first');
+    state.req.partials = [];
+    $('partials').textContent = '[]';
+    return;
+  }
+
+  const matching = inbox.filter((m) => {
+    const j = m.json;
+    return j?.type === 'rotation-partial'
+      && j.old_npub === req.old_npub
+      && j.new_npub === req.new_npub
+      && j.nonce === req.nonce
+      && Number.isInteger(j.partial?.id);
+  });
+
+  // Dedupe by guardian id: keep most recent message per guardian.
+  const byGuardian = new Map();
+  for (const m of matching) {
+    const gid = m.json.partial.id;
+    const ts = m.wrap?.created_at || 0;
+    const prev = byGuardian.get(gid);
+    if (!prev || ts >= prev.ts) byGuardian.set(gid, { ts, partial: m.json.partial });
+  }
+
+  state.req.partials = [...byGuardian.values()].map((x) => x.partial).sort((a, b) => a.id - b.id);
   $('partials').textContent = JSON.stringify(state.req.partials, null, 2);
+  setStatus(`partials loaded: ${state.req.partials.length} unique guardian(s)`);
 };
 
 $('aggregate').onclick = () => {
