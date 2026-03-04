@@ -14,6 +14,9 @@ This folder vendors a popular web Nostr client and adds a key-rotation demo inte
 ### Yakihonne
 - Route: `/key-rotation-demo`
 - File: `yakihonne/src/pages/key-rotation-demo.js`
+- Includes requester mode:
+  - compose/send `rotation-request` DMs to guardian list (`id,npub`)
+  - can auto-use logged-in account as `new_npub`
 - Also integrated in DM conversation UI:
   - file: `yakihonne/src/Components/ConversationBox.js`
   - detects incoming `rotation-request` JSON messages
