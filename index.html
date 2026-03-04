@@ -22,6 +22,9 @@
       .steps { margin:0; padding-left:18px; }
       .steps li { margin:8px 0; }
       .ok { color:#22c55e; font-weight:600; }
+      .msg-item { border:1px solid #334155; border-radius:8px; padding:8px; margin:8px 0; background:#0b1224; }
+      .msg-head { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+      .msg-meta { font-size:12px; color:#94a3b8; }
     </style>
   </head>
   <body>
@@ -83,11 +86,9 @@
           <div>
             <label>Filter requester npub (optional)</label>
             <input id="guardianFilterNpub" style="width:100%" placeholder="npub1..."/>
-            <label>Filter nonce (optional, recommended)</label>
-            <input id="guardianFilterNonce" style="width:100%" placeholder="uuid nonce from current request"/>
             <button id="refreshGuardian">Refresh incoming requests</button>
+            <div id="guardianInboxList" class="muted"></div>
             <pre id="guardianInbox"></pre>
-            <button id="confirmFirst">Confirm latest matching request</button>
           </div>
         </div>
       </section>

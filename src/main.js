@@ -103,13 +103,12 @@ $('genGuardian').onclick = () => { $('guardianNsec').value = genKeyPair().nsec; 
 $('refreshGuardian').onclick = async () => {
   const skHex = toHex($('guardianNsec').value.trim());
   const filterNpub = $('guardianFilterNpub').value.trim();
-  const filterNonce = $('guardianFilterNonce').value.trim();
   const inbox = await fetchNip17Inbox(relays(), skHex, genPub(skHex), Math.floor(Date.now() / 1000) - 86400);
 
   let reqs = inbox
     .filter((m) => m.json?.type === 'rotation-request')
     .map((m) => ({
-      ...m,
+      wrap: m.wrap,
       json: {
         ...m.json,
         old_npub: (m.json?.old_npub || '').trim(),
@@ -118,26 +117,31 @@ $('refreshGuardian').onclick = async () => {
       },
     }))
     .filter((m) => !filterNpub || m.json?.new_npub === filterNpub || m.json?.old_npub === filterNpub)
-    .filter((m) => !filterNonce || m.json?.nonce === filterNonce);
+    .sort((a, b) => (b.wrap?.created_at || 0) - (a.wrap?.created_at || 0));
 
-  // keep only the latest matching request to avoid stale spam
-  reqs = reqs.sort((a, b) => (b.wrap?.created_at || 0) - (a.wrap?.created_at || 0));
-  const latest = reqs[0]?.json;
-
-  state.guardianReqs = latest ? [latest] : [];
-  $('guardianInbox').textContent = JSON.stringify(state.guardianReqs, null, 2);
-  setStatus(latest ? 'guardian inbox: showing latest matching request' : 'guardian inbox: no matching request');
+  state.guardianReqs = reqs;
+  $('guardianInbox').textContent = JSON.stringify(reqs.map((r) => r.json), null, 2);
+  renderGuardianInboxList();
+  setStatus(reqs.length ? `guardian inbox: ${reqs.length} message(s)` : 'guardian inbox: no matching request');
 };
 
-$('confirmFirst').onclick = async () => {
-  const req = state.guardianReqs[0];
+$('guardianInboxList').onclick = async (ev) => {
+  const btn = ev.target.closest('button[data-confirm-index]');
+  if (!btn) return;
+  const idx = Number(btn.getAttribute('data-confirm-index'));
+  const reqWrap = state.guardianReqs[idx];
+  const req = reqWrap?.json;
   if (!req) return;
-  const share = JSON.parse($('guardianShare').value || '{}');
-  const partial = partialSign(req, share, req.participant_ids || [1, 2], share.groupPubkey);
-  await sendNip17DM(relays(), toHex($('guardianNsec').value.trim()), nip19.decode(req.new_npub).data, {
-    type: 'rotation-partial', old_npub: req.old_npub, new_npub: req.new_npub, nonce: req.nonce, partial,
-  });
-  setStatus('partial sent');
+  try {
+    const share = JSON.parse($('guardianShare').value || '{}');
+    const partial = partialSign(req, share, req.participant_ids || [1, 2], share.groupPubkey);
+    await sendNip17DM(relays(), toHex($('guardianNsec').value.trim()), nip19.decode(req.new_npub).data, {
+      type: 'rotation-partial', old_npub: req.old_npub, new_npub: req.new_npub, nonce: req.nonce, partial,
+    });
+    setStatus(`partial sent to ${req.new_npub.slice(0, 16)}…`);
+  } catch (e) {
+    setStatus(`confirm failed: ${e.message}`);
+  }
 };
 
 $('fetchProofs').onclick = async () => {
@@ -178,6 +182,31 @@ $('demoBtn').onclick = () => {
 function parseGuardianLine(line) {
   const [id, npub, groupPubkey] = line.split(',').map((x) => x.trim());
   return { id: Number(id), npub, groupPubkey };
+}
+
+function renderGuardianInboxList() {
+  const el = $('guardianInboxList');
+  if (!state.guardianReqs.length) {
+    el.innerHTML = '<div class="muted">No rotation requests</div>';
+    return;
+  }
+
+  el.innerHTML = state.guardianReqs.map((r, i) => {
+    const sender = (r.json?.new_npub || '').slice(0, 20);
+    const oldp = (r.json?.old_npub || '').slice(0, 20);
+    const nonce = r.json?.nonce || '';
+    return `
+      <div class="msg-item">
+        <div class="msg-head">
+          <div>
+            <div><strong>From:</strong> ${sender}…</div>
+            <div class="msg-meta">old: ${oldp}… | nonce: ${nonce}</div>
+          </div>
+          <button data-confirm-index="${i}">Confirm</button>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function renderDemoWalkthrough(data) {
