@@ -166,6 +166,21 @@ Expected result:
 
 > Note: Example keys/shares above are intentionally fake for walkthrough UX. Use generated, matching values for realistic crypto tests.
 
+## Mini glossary (technical terms)
+
+- **old_npub**: the current/old public identity you are rotating away from.
+- **new_npub**: the new public identity you want others to follow after rotation.
+- **nsec**: private key in Nostr bech32 format. Keep secret.
+- **nonce**: one-time unique value to prevent replay and make each rotation request unique.
+- **guardian**: a trusted account participating in rotation approval.
+- **threshold (2-of-3)**: minimum number of guardian approvals required (2 out of 3).
+- **share**: a guardian’s private threshold key share (secret scalar). Each guardian has a different one.
+- **groupPubkey**: public key of the guardian threshold group (derived from group secret). Verifiers use this to check the final aggregate proof.
+- **partial signature**: a guardian’s contribution toward the final threshold signature.
+- **aggregate signature/proof**: final combined signature built from enough partials.
+- **rotation proof event**: public Nostr event containing old/new npub mapping + proof data.
+- **NIP-17 DM**: private Nostr DM transport using gift-wrap events.
+
 ## Tests
 
 ```bash
