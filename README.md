@@ -36,6 +36,10 @@ Open local URL from Vite.
 
 1. Click **Run scripted demo**.
 2. See state transition and verified proof in the proof panel.
+3. Open **Demo Walkthrough** tab to view:
+   - trusted guardian box
+   - step-by-step status with checkmarks
+   - compact demo state summary
 
 ## Network DM flow
 
@@ -60,9 +64,34 @@ Open local URL from Vite.
    - fetch proofs
    - verify
 
+## Tests
+
+```bash
+npm test
+```
+
+- Uses Vitest
+- Covers threshold signing/verification and Nostr helper utilities
+
+## Implementation references (popular clients)
+
+`implementation/` contains vendored client integrations for demo UX work:
+
+- `implementation/coracle` (Coracle)
+  - demo route: `/key-rotation-demo`
+- `implementation/yakihonne` (official YakiHonne web app)
+  - demo route: `/key-rotation-demo`
+  - run:
+    ```bash
+    cd implementation/yakihonne
+    pnpm install
+    pnpm dev
+    ```
+
 ## Files
 
 - `index.html` UI
 - `src/main.js` role workflows
 - `src/nostr.js` NIP-17 and relay ops
 - `src/frost.js` threshold Schnorr PoC math
+- `test/` Vitest suite
