@@ -11,6 +11,7 @@ import { deleteMessage, sendMessage } from "@/Helpers/DMHelpers";
 import OptionsDropdown from "./OptionsDropdown";
 import { copyText } from "@/Helpers/Helpers";
 import DeleteWarning from "./DeleteWarning";
+import { buildRotationPartial, parseRotationRequest } from "@/Helpers/RotationProof";
 
 export function ConversationBox({ convo, back, noHeader = false }) {
   let conversationLength = convo.convo.length;
@@ -29,6 +30,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [showGifs, setShowGifs] = useState(false);
   const [multiDeletion, setMultiDeletion] = useState([]);
   const [showDelete, setShowDelete] = useState(false);
+  const [guardianShareJSON, setGuardianShareJSON] = useState("");
   const peerName =
     convo?.display_name?.substring(0, 10) ||
     convo?.name?.substring(0, 10) ||
@@ -71,6 +73,39 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     } else {
       localStorage?.setItem("legacy-dm", `${Date.now()}`);
       setLegacy(true);
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setGuardianShareJSON(localStorage.getItem("guardian-share-json") || "");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("guardian-share-json", guardianShareJSON || "");
+    }
+  }, [guardianShareJSON]);
+
+  const handleConfirmRotationRequest = async (rotationReq) => {
+    try {
+      if (!guardianShareJSON) throw new Error("Missing guardian share JSON");
+      const share = JSON.parse(guardianShareJSON);
+      const partial = buildRotationPartial(rotationReq, share);
+      const payload = {
+        type: "rotation-partial",
+        old_npub: rotationReq.old_npub,
+        new_npub: rotationReq.new_npub,
+        nonce: rotationReq.nonce,
+        partial,
+      };
+      setShowProgress(true);
+      await sendMessage(convo.pubkey, JSON.stringify(payload));
+      setShowProgress(false);
+    } catch (e) {
+      setShowProgress(false);
+      alert(`Rotation confirm failed: ${e.message}`);
     }
   };
 
@@ -165,6 +200,19 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             )}
           </div>
         )}
+        <div className="fit-container box-pad-h-m" style={{ paddingTop: 0 }}>
+          <details>
+            <summary className="pointer p-medium">Guardian settings (rotation demo)</summary>
+            <textarea
+              className="if ifs-full"
+              placeholder='{"id":1,"share":"...","threshold":2,"groupPubkey":"..."}'
+              value={guardianShareJSON}
+              onChange={(e) => setGuardianShareJSON(e.target.value)}
+              style={{ minHeight: "72px", marginTop: ".5rem" }}
+            />
+          </details>
+        </div>
+
         <div
           className="fx-centered fx-start-h fx-col box-pad-h-m box-pad-v-m fit-container"
           style={{
@@ -191,6 +239,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
           )}
           {convo.convo.map((convo, index) => {
             let reply = convo.replyID ? getReply(convo.replyID) : false;
+            const rotationReq = parseRotationRequest(convo.raw_content);
             let isSelected = multiDeletion.includes(
               convo.giftWrapId || convo.id,
             );
@@ -335,6 +384,20 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                     >
                       {<div className="fit-container">{convo.content}</div> || (
                         <LoadingDots />
+                      )}
+                      {convo.peer && rotationReq && (
+                        <div
+                          className="fit-container fx-scattered box-pad-v-s"
+                          style={{ borderTop: "1px solid var(--dim-gray)", marginTop: ".5rem" }}
+                        >
+                          <p className="p-medium gray-c">rotation-request</p>
+                          <button
+                            className="btn btn-normal"
+                            onClick={() => handleConfirmRotationRequest(rotationReq)}
+                          >
+                            Confirm
+                          </button>
+                        </div>
                       )}
                       <div
                         className="fx-centered fx-start-h round-icon-tooltip pointer fit-container"

@@ -14,7 +14,11 @@ This folder vendors a popular web Nostr client and adds a key-rotation demo inte
 ### Yakihonne
 - Route: `/key-rotation-demo`
 - File: `yakihonne/src/pages/key-rotation-demo.js`
-- Includes trusted guardian box, request fields, safe-words demo input, and guardian confirmation box.
+- Also integrated in DM conversation UI:
+  - file: `yakihonne/src/Components/ConversationBox.js`
+  - detects incoming `rotation-request` JSON messages
+  - shows per-message **Confirm** button
+  - uses guardian share JSON (saved locally) to send `rotation-partial` response
 
 ## Run locally (Yakihonne)
 ```bash
