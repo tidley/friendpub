@@ -10,7 +10,7 @@ const state = { req: { partials: [], request: null, policy: null, proof: null },
 const setStatus = (x) => ($('status').textContent = x);
 const relays = () => $('relays').value.split(',').map((x) => x.trim()).filter(Boolean);
 
-document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => ['requester', 'guardian', 'observer'].forEach((t) => $(t).classList.toggle('hidden', t !== b.dataset.tab))));
+document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => ['requester', 'guardian', 'observer', 'demo'].forEach((t) => $(t).classList.toggle('hidden', t !== b.dataset.tab))));
 
 $('genRequester').onclick = () => {
   const k = genKeyPair();
@@ -111,14 +111,17 @@ $('demoBtn').onclick = () => {
   const p2 = partialSign(req, shares[1], [1, 2], dealer.groupPubkey);
   const sig = aggregate(req, [p1, p2], dealer.groupPubkey);
   const ok = verifyAggregate(req, sig, dealer.groupPubkey);
-  $('proof').textContent = JSON.stringify({
+  const demoData = {
     flow: ['pending', 'partials collected', 'proof published', 'identity rotated'],
     policy: { threshold: 2, groupPubkey: dealer.groupPubkey, guardians: shares.map((x) => ({ id: x.id, npub: x.guardianNpub })) },
     request: req,
     partials: [p1, p2],
     signature: sig,
     verified: ok,
-  }, null, 2);
+  };
+  $('proof').textContent = JSON.stringify(demoData, null, 2);
+  renderDemoWalkthrough(demoData);
+  ['requester', 'guardian', 'observer', 'demo'].forEach((t) => $(t).classList.toggle('hidden', t !== 'demo'));
   setStatus(ok ? 'demo success' : 'demo failed');
 };
 
@@ -126,4 +129,35 @@ function parseGuardianLine(line) {
   const [id, npub, groupPubkey] = line.split(',').map((x) => x.trim());
   return { id: Number(id), npub, groupPubkey };
 }
+
+function renderDemoWalkthrough(data) {
+  const guardians = data.policy.guardians || [];
+  $('trustedGuardians').innerHTML = guardians
+    .map((g) => `<span class="guardian-pill">Guardian ${g.id} • ${g.npub.slice(0, 12)}…</span>`)
+    .join('');
+  $('groupPubkey').textContent = `Group pubkey: ${data.policy.groupPubkey}`;
+
+  const stepStates = [true, true, true, data.partials.length >= 2, !!data.signature, !!data.verified];
+  const labels = [
+    'Create old identity + guardian set',
+    'Create new identity',
+    'Send rotation request',
+    'Guardians confirm and send partials',
+    'Aggregate threshold proof',
+    'Publish + observer verifies',
+  ];
+  $('demoSteps').innerHTML = labels
+    .map((label, i) => `<li>${label} ${stepStates[i] ? '<span class="ok">✓</span>' : ''}</li>`)
+    .join('');
+
+  $('demoState').textContent = JSON.stringify({
+    trusted_guardians: guardians,
+    threshold: data.policy.threshold,
+    participants_used: data.partials.map((p) => p.id),
+    verified: data.verified,
+    old_npub: data.request.old_npub,
+    new_npub: data.request.new_npub,
+  }, null, 2);
+}
+
 function simpleHash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return (h >>> 0).toString(16); }
