@@ -1,6 +1,6 @@
 import * as secp from "@noble/secp256k1";
-import { sha256 } from "@noble/hashes/sha2";
-import { utf8ToBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
 
 const n = BigInt(
   "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
