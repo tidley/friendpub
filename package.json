@@ -1,0 +1,21 @@
+{
+  "name": "sec06",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "nostr-tools": "^2.23.3",
+    "vite": "^7.3.1"
+  }
+}

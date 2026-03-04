@@ -1,0 +1,129 @@
+import { getPublicKey, nip19 } from 'nostr-tools';
+import { aggregate, dealerCreate2of3, partialSign, verifyAggregate } from './frost';
+import { fetchNip17Inbox, fetchProofs, genKeyPair, publishRotationProof, sendNip17DM, toHex } from './nostr';
+
+const $ = (id) => document.getElementById(id);
+const hexToBytes = (h) => Uint8Array.from(h.match(/.{1,2}/g).map((b) => parseInt(b, 16)));
+const genPub = (skHex) => getPublicKey(hexToBytes(skHex));
+
+const state = { req: { partials: [], request: null, policy: null, proof: null }, guardianReqs: [] };
+const setStatus = (x) => ($('status').textContent = x);
+const relays = () => $('relays').value.split(',').map((x) => x.trim()).filter(Boolean);
+
+document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => ['requester', 'guardian', 'observer'].forEach((t) => $(t).classList.toggle('hidden', t !== b.dataset.tab))));
+
+$('genRequester').onclick = () => {
+  const k = genKeyPair();
+  $('newNsec').value = k.nsec;
+  $('newNpubOut').textContent = `new npub: ${k.npub}`;
+};
+
+$('sendReq').onclick = async () => {
+  try {
+    const skHex = toHex($('newNsec').value.trim());
+    const req = {
+      type: 'rotation-request',
+      old_npub: $('oldNpub').value.trim(),
+      new_npub: nip19.npubEncode(genPub(skHex)),
+      nonce: crypto.randomUUID(),
+      reason: $('reason').value.trim(),
+      participant_ids: [1, 2, 3],
+    };
+    const guardians = $('guardians').value.trim().split('\n').filter(Boolean).map(parseGuardianLine);
+    state.req.request = req;
+    state.req.policy = { threshold: 2, guardians: guardians.map((g) => ({ id: g.id, npub: g.npub })), groupPubkey: guardians[0]?.groupPubkey };
+    $('policy').value = JSON.stringify(state.req.policy, null, 2);
+    for (const g of guardians) await sendNip17DM(relays(), skHex, nip19.decode(g.npub).data, req);
+    setStatus('rotation request sent');
+  } catch (e) { setStatus(`send failed: ${e.message}`); }
+};
+
+$('refreshReq').onclick = async () => {
+  const skHex = toHex($('newNsec').value.trim());
+  const inbox = await fetchNip17Inbox(relays(), skHex, genPub(skHex), Math.floor(Date.now() / 1000) - 86400);
+  state.req.partials = inbox.filter((m) => m.json?.type === 'rotation-partial').map((m) => m.json.partial);
+  $('partials').textContent = JSON.stringify(state.req.partials, null, 2);
+};
+
+$('aggregate').onclick = () => {
+  const { request, policy, partials } = state.req;
+  if (!request || !policy || partials.length < 2) return setStatus('need request + >=2 partials');
+  const picked = partials.slice(0, 2);
+  const signature = aggregate(request, picked, policy.groupPubkey);
+  state.req.proof = {
+    type: 'rotation-proof',
+    old_npub: request.old_npub,
+    new_npub: request.new_npub,
+    nonce: request.nonce,
+    guardian_set_hash: simpleHash(JSON.stringify(policy)),
+    threshold: policy.threshold,
+    group_pubkey: policy.groupPubkey,
+    participants: picked.map((p) => p.id),
+    signature,
+  };
+  $('proof').textContent = JSON.stringify({ valid_local: verifyAggregate(request, signature, policy.groupPubkey), payload: state.req.proof }, null, 2);
+};
+
+$('publishProof').onclick = async () => {
+  if (!state.req.proof) return;
+  await publishRotationProof(relays(), toHex($('newNsec').value.trim()), state.req.proof);
+  setStatus('proof published');
+};
+
+$('genGuardian').onclick = () => { $('guardianNsec').value = genKeyPair().nsec; };
+
+$('refreshGuardian').onclick = async () => {
+  const skHex = toHex($('guardianNsec').value.trim());
+  const inbox = await fetchNip17Inbox(relays(), skHex, genPub(skHex), Math.floor(Date.now() / 1000) - 86400);
+  state.guardianReqs = inbox.filter((m) => m.json?.type === 'rotation-request').map((m) => m.json);
+  $('guardianInbox').textContent = JSON.stringify(state.guardianReqs, null, 2);
+};
+
+$('confirmFirst').onclick = async () => {
+  const req = state.guardianReqs[0];
+  if (!req) return;
+  const share = JSON.parse($('guardianShare').value || '{}');
+  const partial = partialSign(req, share, req.participant_ids || [1, 2], share.groupPubkey);
+  await sendNip17DM(relays(), toHex($('guardianNsec').value.trim()), nip19.decode(req.new_npub).data, {
+    type: 'rotation-partial', old_npub: req.old_npub, new_npub: req.new_npub, nonce: req.nonce, partial,
+  });
+  setStatus('partial sent');
+};
+
+$('fetchProofs').onclick = async () => {
+  const pol = JSON.parse($('policy').value || '{}');
+  const out = [];
+  for (const e of await fetchProofs(relays(), Math.floor(Date.now() / 1000) - 86400 * 7)) {
+    try {
+      const p = JSON.parse(e.content);
+      out.push({ id: e.id, old: p.old_npub, neu: p.new_npub, valid: verifyAggregate({ old_npub: p.old_npub, new_npub: p.new_npub, nonce: p.nonce }, p.signature, pol.groupPubkey || p.group_pubkey) });
+    } catch {}
+  }
+  $('observerOut').textContent = JSON.stringify(out, null, 2);
+};
+
+$('demoBtn').onclick = () => {
+  const dealer = dealerCreate2of3();
+  const oldK = genKeyPair(), newK = genKeyPair(), g = [genKeyPair(), genKeyPair(), genKeyPair()];
+  const req = { type: 'rotation-request', old_npub: oldK.npub, new_npub: newK.npub, nonce: crypto.randomUUID(), reason: 'lost key' };
+  const shares = dealer.shares.map((s, i) => ({ id: s.id, share: s.share.toString(16).padStart(64, '0'), threshold: 2, groupPubkey: dealer.groupPubkey, guardianNpub: g[i].npub }));
+  const p1 = partialSign(req, shares[0], [1, 2], dealer.groupPubkey);
+  const p2 = partialSign(req, shares[1], [1, 2], dealer.groupPubkey);
+  const sig = aggregate(req, [p1, p2], dealer.groupPubkey);
+  const ok = verifyAggregate(req, sig, dealer.groupPubkey);
+  $('proof').textContent = JSON.stringify({
+    flow: ['pending', 'partials collected', 'proof published', 'identity rotated'],
+    policy: { threshold: 2, groupPubkey: dealer.groupPubkey, guardians: shares.map((x) => ({ id: x.id, npub: x.guardianNpub })) },
+    request: req,
+    partials: [p1, p2],
+    signature: sig,
+    verified: ok,
+  }, null, 2);
+  setStatus(ok ? 'demo success' : 'demo failed');
+};
+
+function parseGuardianLine(line) {
+  const [id, npub, groupPubkey] = line.split(',').map((x) => x.trim());
+  return { id: Number(id), npub, groupPubkey };
+}
+function simpleHash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return (h >>> 0).toString(16); }

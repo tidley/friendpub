@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>sec06 - Nostr Key Rotation PoC</title>
+    <style>
+      body { font-family: Inter, system-ui, sans-serif; margin: 0; background: #0b1020; color: #e5e7eb; }
+      header { padding: 14px 18px; border-bottom: 1px solid #1f2937; display:flex; justify-content:space-between; align-items:center; }
+      main { padding: 16px; max-width: 1100px; margin: 0 auto; }
+      .tabs button { margin-right: 8px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0; }
+      .card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 12px; }
+      input, textarea, button, select { background:#0f172a; color:#e5e7eb; border:1px solid #334155; border-radius:8px; padding:8px; }
+      textarea { width:100%; min-height:110px; }
+      button { cursor: pointer; }
+      .muted { color:#94a3b8; font-size: 12px; }
+      pre { white-space: pre-wrap; word-break: break-word; background:#020617; padding:8px; border-radius:8px; }
+      .hidden { display:none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>sec06 — Nostr threshold key-rotation PoC</strong>
+      <span id="status" class="muted"></span>
+    </header>
+    <main>
+      <div class="tabs">
+        <button data-tab="requester">Requester</button>
+        <button data-tab="guardian">Guardian</button>
+        <button data-tab="observer">Observer</button>
+        <button id="demoBtn">Run scripted demo</button>
+      </div>
+
+      <section id="requester" class="card">
+        <h3>Requester (new key)</h3>
+        <div class="row">
+          <div>
+            <label>Relay URLs (comma separated)</label>
+            <input id="relays" value="wss://relay.damus.io,wss://nos.lol" style="width:100%"/>
+            <label>Old npub</label><input id="oldNpub" style="width:100%"/>
+            <label>New nsec (or blank to generate)</label><input id="newNsec" style="width:100%"/>
+            <button id="genRequester">Generate new key</button>
+            <div class="muted" id="newNpubOut"></div>
+          </div>
+          <div>
+            <label>Guardian npubs (3 lines, with share-id 1..3)</label>
+            <textarea id="guardians"></textarea>
+            <label>Reason</label><input id="reason" value="key compromise" style="width:100%"/>
+            <button id="sendReq">Send rotation request via NIP-17 DM</button>
+            <button id="refreshReq">Refresh DMs</button>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <h4>Collected partials</h4>
+            <pre id="partials"></pre>
+            <button id="aggregate">Aggregate 2-of-3 proof</button>
+          </div>
+          <div>
+            <h4>Rotation proof</h4>
+            <pre id="proof"></pre>
+            <button id="publishProof">Publish proof event</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="guardian" class="card hidden">
+        <h3>Guardian</h3>
+        <div class="row">
+          <div>
+            <label>Guardian nsec</label><input id="guardianNsec" style="width:100%"/>
+            <label>Guardian share JSON (id, threshold, share, groupPubkey)</label>
+            <textarea id="guardianShare"></textarea>
+            <button id="genGuardian">Generate guardian key</button>
+          </div>
+          <div>
+            <button id="refreshGuardian">Refresh incoming requests</button>
+            <pre id="guardianInbox"></pre>
+            <button id="confirmFirst">Confirm first pending request</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="observer" class="card hidden">
+        <h3>Observer / Verifier</h3>
+        <label>Guardian policy JSON (groupPubkey + guardians + threshold)</label>
+        <textarea id="policy"></textarea>
+        <button id="fetchProofs">Fetch proof events</button>
+        <pre id="observerOut"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
