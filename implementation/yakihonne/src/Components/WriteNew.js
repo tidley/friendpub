@@ -1,0 +1,196 @@
+import React, { useRef, useState } from "react";
+import Link from "next/link";
+import { useSelector } from "react-redux";
+import { customHistory } from "@/Helpers/History";
+import { useTranslation } from "react-i18next";
+import LoginSignup from "@/Components/LoginSignup";
+import PostAsNote from "./PostAsNote";
+import useCustomizationSettings from "@/Hooks/useCustomizationSettings";
+import PostMedia from "./PostMedia/PostMedia";
+
+export default function WriteNew({ exit }) {
+  const { t } = useTranslation();
+  const userKeys = useSelector((state) => state.userKeys);
+  const [redirectLinks, setRedirectLinks] = useState(false);
+  const [showPostNote, setShowPostNote] = useState(false);
+  const [showPostMedia, setShowPostMedia] = useState(false);
+  const [isLogin, setIsLogin] = useState(false);
+  const { longPress } = useCustomizationSettings();
+  const timeoutRef = useRef(null);
+
+  const handleLongPress = () => {
+    const longPressOption =
+      longPress && ["notes", "articles", "sw", "mu"].includes(longPress)
+        ? longPress
+        : "notes";
+
+    if (!(userKeys.ext || userKeys.sec || userKeys.bunker)) {
+      setIsLogin(true);
+      return;
+    }
+    if (longPressOption === "notes") {
+      setShowPostNote(true);
+    }
+    if (longPressOption === "mu") {
+      setShowPostMedia(true);
+    }
+    if (longPressOption === "articles") {
+      customHistory("/write-article");
+    }
+    if (longPressOption === "sw") {
+      customHistory("/smart-widget-builder");
+    }
+  };
+
+  const handlePressStart = () => {
+    timeoutRef.current = setTimeout(() => {
+      handleLongPress();
+    }, 200); // long-press threshold in ms
+  };
+
+  const handlePressEnd = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  };
+
+  return (
+    <>
+      {isLogin && <LoginSignup exit={() => setIsLogin(false)} />}
+      {redirectLinks && (
+        <RedictingLinks
+          exit={() => {
+            setRedirectLinks(false);
+            exit();
+          }}
+          internalExit={() => setRedirectLinks(false)}
+          setShowPostNote={() => setShowPostNote(true)}
+          setShowPostMedia={() => setShowPostMedia(true)}
+        />
+      )}
+      {showPostNote && <PostAsNote exit={() => setShowPostNote(false)} />}
+      {showPostMedia && <PostMedia exit={() => setShowPostMedia(false)} />}
+      <button
+        className="btn btn-full btn-orange fx-centered"
+        style={{ padding: 0 }}
+        onClick={() =>
+          !(userKeys.ext || userKeys.sec || userKeys.bunker)
+            ? setIsLogin(true)
+            : setRedirectLinks(true)
+        }
+        onMouseDown={handlePressStart}
+        onMouseUp={handlePressEnd}
+        onMouseLeave={handlePressEnd}
+        onTouchStart={handlePressStart}
+        onTouchEnd={handlePressEnd}
+      >
+        <div className="plus-sign-w"></div>
+        <div className="link-label">{t("AAxCaYH")}</div>
+      </button>
+    </>
+  );
+}
+
+const RedictingLinks = ({
+  exit,
+  internalExit,
+  setShowPostNote,
+  setShowPostMedia,
+}) => {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="fixed-container fx-centered box-pad-h"
+      style={{ zIndex: "1000" }}
+      onClick={(e) => {
+        e.stopPropagation();
+        internalExit();
+      }}
+    >
+      <div
+        className="sc-s box-pad-h box-pad-v fx-centered fx-col bg-sp slide-up"
+        style={{ width: "min(100%,400px)", position: "relative" }}
+      >
+        <div
+          className="close"
+          onClick={(e) => {
+            e.stopPropagation();
+            internalExit();
+          }}
+        >
+          <div></div>
+        </div>
+        <h4 className="box-marg-s">{t("AfTMpSr")}</h4>
+        <div className="fx-centered fx-wrap">
+          <div
+            onClick={setShowPostNote}
+            className={`pointer fit-container fx-centered fx-col box-pad-h-s box-pad-v-s option sc-s-18 bg-sp`}
+            style={{
+              width: "48%",
+              borderRadius: "16px",
+              padding: "2rem",
+            }}
+          >
+            <div
+              className="note-plus-24"
+              style={{ width: "48px", height: "48px" }}
+            ></div>
+            <div className="gray-c">{t("Az5ftet")}</div>
+          </div>
+          <div
+            onClick={() => {
+              customHistory("/write-article");
+              exit();
+            }}
+            className={`pointer fit-container fx-centered fx-col box-pad-h-s box-pad-v-s option sc-s-18 bg-sp`}
+            style={{
+              width: "48%",
+              borderRadius: "16px",
+              padding: "2rem",
+            }}
+          >
+            <div
+              className="posts-plus-24"
+              style={{ width: "48px", height: "48px" }}
+            ></div>
+            <div className="gray-c">{t("AyYkCrS")}</div>
+          </div>
+          <div
+            onClick={setShowPostMedia}
+            className={`pointer fit-container fx-centered fx-col box-pad-h-s box-pad-v-s option sc-s-18 bg-sp`}
+            style={{
+              width: "48%",
+              borderRadius: "16px",
+              padding: "2rem",
+            }}
+          >
+            <div
+              className="media-24"
+              style={{ width: "48px", height: "48px" }}
+            ></div>
+            <div className="gray-c">{t("A0i2SOt")}</div>
+          </div>
+          <Link
+            href={"/smart-widget-builder"}
+            onClick={exit}
+            className={`pointer fit-container fx-centered fx-col box-pad-h-s box-pad-v-s option sc-s-18 bg-sp`}
+            style={{
+              padding: "2rem",
+              width: "48%",
+              borderRadius: "16px",
+            }}
+          >
+            <div
+              className="smart-widget-add-24"
+              style={{ width: "48px", height: "48px" }}
+            ></div>
+            <div style={{ width: "max-content" }} className="gray-c">
+              {t("AkvXmyz")}
+            </div>
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+};

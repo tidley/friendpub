@@ -4,7 +4,7 @@ This folder vendors a popular web Nostr client and adds a key-rotation demo inte
 
 ## Clients included
 - **Coracle** (https://github.com/coracle-social/coracle)
-- **Yakihonne** (https://github.com/yakihonne/yakihonne-web-app)
+- **Yakihonne** (https://github.com/YakiHonne/web-app)
 
 ## Added feature
 ### Coracle
@@ -13,17 +13,16 @@ This folder vendors a popular web Nostr client and adds a key-rotation demo inte
 
 ### Yakihonne
 - Route: `/key-rotation-demo`
-- File: `yakihonne/client/src/Pages/NOSTR/KeyRotationDemo.js`
-- Registered in: `yakihonne/client/src/App.js`
+- File: `yakihonne/src/pages/key-rotation-demo.js`
 - Includes trusted guardian box, request fields, safe-words demo input, and guardian confirmation box.
 
 ## Run locally (Yakihonne)
 ```bash
-cd implementation/yakihonne/client
-npm install
-npm run dev
+cd implementation/yakihonne
+pnpm install
+pnpm dev
 ```
-Open the local URL and visit `/key-rotation-demo`.
+Runs on port `3400` by default; open `/key-rotation-demo`.
 
 ## Security
 - No private keys, tokens, or secrets are committed.

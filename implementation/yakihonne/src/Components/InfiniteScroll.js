@@ -1,0 +1,40 @@
+import { nanoid } from "nanoid";
+import React, { useEffect } from "react";
+const id = nanoid()
+let containerName = "infinite-scroll-" + id
+
+export default function InfiniteScroll({ children, events, onRefresh }) {
+
+  useEffect(() => {
+    const contentArea = document.querySelector(`.${containerName}`);
+    if (!contentArea) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && events?.length > 0) {
+            const lastEvent = events[events.length - 1];
+            if (lastEvent?.created_at) {
+              onRefresh(lastEvent.created_at - 1);
+            }
+          }
+        });
+      },
+      {
+        rootMargin: "400px 0px 400px 0px",
+        threshold: 0,
+      }
+    );
+
+    const lastChild = contentArea.lastElementChild;
+    if (lastChild) {
+      observer.observe(lastChild);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [events]);
+  return <div className={`${containerName} fit-container`}>{children}</div>;
+}
