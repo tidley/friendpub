@@ -1,0 +1,80 @@
+import "src/app.css"
+import "@capacitor-community/safe-area"
+import {loginWithNip01, loginWithNip46, nip46Perms} from "@welshman/app"
+import {Nip46Broker} from "@welshman/signer"
+import {makeSecret} from "@welshman/util"
+import {App as CapacitorApp} from "@capacitor/app"
+import {nsecDecode} from "src/util/nostr"
+import {router} from "src/app/util"
+import App from "src/app/App.svelte"
+import {installPrompt} from "src/partials/state"
+
+// Nstart login - hash is replaced somewhere else, maybe router?
+if (window.location.hash?.startsWith("#nostr-login")) {
+  ;(async () => {
+    const params = new URLSearchParams(window.location.hash.slice(1))
+    const login = params.get("nostr-login")
+
+    let success = false
+
+    try {
+      if (login.startsWith("bunker://")) {
+        const clientSecret = makeSecret()
+        const {signerPubkey, connectSecret, relays} = Nip46Broker.parseBunkerUrl(login)
+        const broker = new Nip46Broker({relays, clientSecret, signerPubkey})
+        const result = await broker.connect(connectSecret, nip46Perms)
+        const pubkey = await broker.getPublicKey()
+
+        // TODO: remove ack result
+        if (pubkey && ["ack", connectSecret].includes(result)) {
+          loginWithNip46(pubkey, clientSecret, signerPubkey, relays)
+          success = true
+        }
+
+        broker.cleanup()
+      } else {
+        const secret = nsecDecode(login)
+
+        loginWithNip01(secret)
+        success = true
+      }
+    } catch (e) {
+      console.error(e)
+    }
+
+    if (success) {
+      setTimeout(
+        () => router.at("/signup").cx({stage: "follows", nstartCompleted: true}).open(),
+        300,
+      )
+    }
+  })()
+}
+
+// Analytics
+window.plausible =
+  window.plausible ||
+  function () {
+    ;(window.plausible.q = window.plausible.q || []).push(arguments)
+  }
+
+window.addEventListener("beforeinstallprompt", e => {
+  // Prevent Chrome 67 and earlier from automatically showing the prompt
+  e.preventDefault()
+
+  // Stash the event so it can be triggered later.
+  installPrompt.set(e)
+})
+
+// Handle back button on android
+CapacitorApp.addListener("backButton", ({canGoBack}) => {
+  if (!canGoBack) {
+    CapacitorApp.exitApp()
+  } else {
+    window.history.back()
+  }
+})
+
+export default new App({
+  target: document.getElementById("app"),
+})
