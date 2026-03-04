@@ -102,9 +102,20 @@ $('genGuardian').onclick = () => { $('guardianNsec').value = genKeyPair().nsec; 
 
 $('refreshGuardian').onclick = async () => {
   const skHex = toHex($('guardianNsec').value.trim());
+  const filterNpub = $('guardianFilterNpub').value.trim();
   const inbox = await fetchNip17Inbox(relays(), skHex, genPub(skHex), Math.floor(Date.now() / 1000) - 86400);
-  state.guardianReqs = inbox.filter((m) => m.json?.type === 'rotation-request').map((m) => m.json);
+
+  let reqs = inbox
+    .filter((m) => m.json?.type === 'rotation-request')
+    .filter((m) => !filterNpub || m.json?.new_npub === filterNpub || m.json?.old_npub === filterNpub);
+
+  // keep only the latest matching request to avoid stale spam
+  reqs = reqs.sort((a, b) => (b.wrap?.created_at || 0) - (a.wrap?.created_at || 0));
+  const latest = reqs[0]?.json;
+
+  state.guardianReqs = latest ? [latest] : [];
   $('guardianInbox').textContent = JSON.stringify(state.guardianReqs, null, 2);
+  setStatus(latest ? 'guardian inbox: showing latest matching request' : 'guardian inbox: no matching request');
 };
 
 $('confirmFirst').onclick = async () => {

@@ -81,9 +81,11 @@
             <button id="genGuardian">Generate guardian key</button>
           </div>
           <div>
+            <label>Filter requester npub (optional)</label>
+            <input id="guardianFilterNpub" style="width:100%" placeholder="npub1..."/>
             <button id="refreshGuardian">Refresh incoming requests</button>
             <pre id="guardianInbox"></pre>
-            <button id="confirmFirst">Confirm first pending request</button>
+            <button id="confirmFirst">Confirm latest matching request</button>
           </div>
         </div>
       </section>
