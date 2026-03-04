@@ -543,14 +543,28 @@ const getSubData = async (
     let events = [];
     let pubkeys = [];
 
-    let filter_ = filter.map((_) => {
-      let temp = { ..._ };
-      if (!_["#t"]) {
-        delete temp["#t"];
+    let filter_ = filter
+      .map((_) => {
+        let temp = { ..._ };
+        if (!_["#t"]) delete temp["#t"];
+
+        // sanitize common array filters to avoid undefined entries
+        if (Array.isArray(temp.authors)) {
+          temp.authors = temp.authors.filter((x) => typeof x === "string" && x.length > 0);
+          if (temp.authors.length === 0) delete temp.authors;
+        }
+        if (Array.isArray(temp.ids)) {
+          temp.ids = temp.ids.filter((x) => typeof x === "string" && x.length > 0);
+          if (temp.ids.length === 0) delete temp.ids;
+        }
+        if (Array.isArray(temp["#p"])) {
+          temp["#p"] = temp["#p"].filter((x) => typeof x === "string" && x.length > 0);
+          if (temp["#p"].length === 0) delete temp["#p"];
+        }
+
         return temp;
-      }
-      return temp;
-    });
+      })
+      .filter((f) => Object.keys(f).length > 0);
 
     if (!filter_ || filter_.length === 0) {
       resolve({ data: [], pubkeys: [] });
