@@ -43,6 +43,8 @@ Open local URL from Vite.
 
 ## Network DM flow
 
+> ⚠️ Demo-only data below. Do **not** use these keys/shares for real funds or identity security.
+
 1. In **Requester**:
    - set old npub
    - generate/import new nsec
@@ -63,6 +65,42 @@ Open local URL from Vite.
    - load policy JSON
    - fetch proofs
    - verify
+
+### Copy/paste demo data (example)
+
+Use these for a quick local demo wiring:
+
+- Example old npub:
+  - `npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2u6x9q`
+- Example guardian group pubkey (compressed secp256k1 hex):
+  - `02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
+
+Paste into **Requester → Guardian npubs** (3 lines):
+
+```text
+1,npub1guardianxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1,02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2,npub1guardianyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy2,02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+3,npub1guardianzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz3,02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+```
+
+Paste into **Guardian → Guardian share JSON** (change `id`/`share` per guardian):
+
+Guardian 1:
+```json
+{"id":1,"share":"1111111111111111111111111111111111111111111111111111111111111111","threshold":2,"groupPubkey":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+```
+
+Guardian 2:
+```json
+{"id":2,"share":"2222222222222222222222222222222222222222222222222222222222222222","threshold":2,"groupPubkey":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+```
+
+Guardian 3:
+```json
+{"id":3,"share":"3333333333333333333333333333333333333333333333333333333333333333","threshold":2,"groupPubkey":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+```
+
+> Note: These are intentionally fake example values for UI/demo copy-paste. Use generated values for any real testnet/mainnet-like scenarios.
 
 ## Tests
 
