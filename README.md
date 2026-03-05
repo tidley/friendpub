@@ -207,6 +207,12 @@ npm test
   - demo route: `/key-rotation-demo`
 - `implementation/yakihonne` (official YakiHonne web app)
   - demo route: `/key-rotation-demo`
+  - supports end-to-end demo flow:
+    - send `rotation-request`
+    - guardian DM Confirm
+    - collect matching partials
+    - aggregate proof
+    - publish proof event
   - run:
     ```bash
     cd implementation/yakihonne

@@ -54,6 +54,45 @@ export const buildRotationPartial = (req, share) => {
   };
 };
 
+export const aggregateRotationProof = (req, partials, groupPubkey) => {
+  const msg = rotateMsgHash(req.old_npub, req.new_npub, req.nonce);
+  const R = partials
+    .map((p) => secp.Point.fromHex(p.R_i))
+    .reduce((a, b) => a.add(b), secp.Point.ZERO);
+  const z = partials.reduce((a, p) => mod(a + hexToBig(p.z_i)), 0n);
+  const c = Hn(utf8ToBytes("rotate-chal"), msg, hexToBytes(groupPubkey));
+  return {
+    R: R.toHex(true),
+    z: z.toString(16).padStart(64, "0"),
+    c: c.toString(16),
+  };
+};
+
+export const verifyRotationProof = (req, sig, groupPubkey) => {
+  const msg = rotateMsgHash(req.old_npub, req.new_npub, req.nonce);
+  const R = secp.Point.fromHex(sig.R);
+  const X = secp.Point.fromHex(groupPubkey);
+  const z = hexToBig(sig.z);
+  const c = Hn(utf8ToBytes("rotate-chal"), msg, hexToBytes(groupPubkey));
+  return G.multiply(z).equals(R.add(X.multiply(c)));
+};
+
+export const parseRotationPartial = (raw) => {
+  try {
+    const j = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (j?.type !== "rotation-partial") return null;
+    if (!Number.isInteger(j?.partial?.id)) return null;
+    return {
+      ...j,
+      old_npub: (j.old_npub || "").trim(),
+      new_npub: (j.new_npub || "").trim(),
+      nonce: (j.nonce || "").trim(),
+    };
+  } catch {
+    return null;
+  }
+};
+
 export const parseRotationRequest = (raw) => {
   try {
     let candidate = raw;

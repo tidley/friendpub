@@ -1,18 +1,32 @@
 import React, { useMemo, useState } from "react";
 import { nip19 } from "nostr-tools";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import { sendMessage } from "@/Helpers/DMHelpers";
+import {
+  aggregateRotationProof,
+  parseRotationPartial,
+  verifyRotationProof,
+} from "@/Helpers/RotationProof";
+import { InitEvent } from "@/Helpers/Controlers";
+import { setToPublish } from "@/Store/Slides/Publishers";
+import { relaysOnPlatform } from "@/Content/Relays";
 
 export default function KeyRotationDemoPage() {
+  const dispatch = useDispatch();
   const userKeys = useSelector((state) => state.userKeys);
+  const userChatrooms = useSelector((state) => state.userChatrooms);
+  const userInboxRelays = useSelector((state) => state.userInboxRelays);
   const [oldNpub, setOldNpub] = useState("");
   const [newNpub, setNewNpub] = useState("");
   const [nonce, setNonce] = useState("");
   const [reason, setReason] = useState("key compromise");
   const [safeWords, setSafeWords] = useState("");
   const [guardiansInput, setGuardiansInput] = useState("");
+  const [groupPubkey, setGroupPubkey] = useState("");
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState("");
+  const [partialRows, setPartialRows] = useState([]);
+  const [proofPayload, setProofPayload] = useState(null);
   const [g1, setG1] = useState(false);
   const [g2, setG2] = useState(false);
   const [g3, setG3] = useState(false);
@@ -54,6 +68,100 @@ export default function KeyRotationDemoPage() {
         return { id: Number(id), npub };
       })
       .filter((g) => Number.isInteger(g.id) && g.npub?.startsWith("npub1"));
+
+  const collectPartials = () => {
+    const req = {
+      old_npub: oldNpub.trim(),
+      new_npub: resolvedNewNpub,
+      nonce: nonce.trim(),
+    };
+    const rows = [];
+    for (const room of userChatrooms || []) {
+      for (const msg of room.convo || []) {
+        const raw = msg.raw_content || msg.content;
+        const p = parseRotationPartial(raw);
+        if (!p) continue;
+        if (
+          p.old_npub === req.old_npub &&
+          p.new_npub === req.new_npub &&
+          p.nonce === req.nonce
+        ) {
+          rows.push({
+            from: room.pubkey,
+            created_at: msg.created_at || 0,
+            partial: p.partial,
+          });
+        }
+      }
+    }
+    rows.sort((a, b) => b.created_at - a.created_at);
+    setPartialRows(rows);
+    setSendResult(`collected ${rows.length} matching partial message(s)`);
+  };
+
+  const aggregateProof = () => {
+    try {
+      const req = {
+        old_npub: oldNpub.trim(),
+        new_npub: resolvedNewNpub,
+        nonce: nonce.trim(),
+      };
+      if (!req.old_npub || !req.new_npub || !req.nonce) throw new Error("old/new/nonce required");
+      if (!groupPubkey.trim()) throw new Error("group pubkey required");
+
+      const seen = new Set();
+      const picked = [];
+      for (const row of partialRows) {
+        const id = row.partial?.id;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        picked.push(row.partial);
+        if (picked.length >= 2) break;
+      }
+      if (picked.length < 2) throw new Error("need 2 unique guardian partials");
+
+      const signature = aggregateRotationProof(req, picked, groupPubkey.trim());
+      const valid_local = verifyRotationProof(req, signature, groupPubkey.trim());
+      const payload = {
+        type: "rotation-proof",
+        old_npub: req.old_npub,
+        new_npub: req.new_npub,
+        nonce: req.nonce,
+        guardian_set_hash: `demo-${(groupPubkey || "").slice(0, 12)}`,
+        threshold: 2,
+        group_pubkey: groupPubkey.trim(),
+        participants: picked.map((p) => p.id),
+        signature,
+        valid_local,
+      };
+      setProofPayload(payload);
+      setSendResult(valid_local ? "proof aggregated (valid_local=true)" : "proof aggregated but invalid");
+    } catch (e) {
+      setSendResult(`aggregate failed: ${e.message}`);
+    }
+  };
+
+  const publishProof = async () => {
+    try {
+      if (!proofPayload) throw new Error("aggregate first");
+      const event = await InitEvent(39089, JSON.stringify(proofPayload), [
+        ["old", proofPayload.old_npub],
+        ["new", proofPayload.new_npub],
+        ["nonce", proofPayload.nonce],
+        ["gset", proofPayload.guardian_set_hash],
+      ]);
+      if (!event) throw new Error("sign event failed");
+      dispatch(
+        setToPublish({
+          eventInitEx: event,
+          allRelays: [...new Set([...(userInboxRelays || []), ...relaysOnPlatform])],
+        }),
+      );
+      setSendResult("rotation proof queued for publish");
+    } catch (e) {
+      setSendResult(`publish failed: ${e.message}`);
+    }
+  };
 
   const sendRotationRequest = async () => {
     try {
@@ -106,6 +214,7 @@ export default function KeyRotationDemoPage() {
           <input style={input} value={newNpub} onChange={(e) => setNewNpub(e.target.value)} placeholder="New npub (blank = use logged in account)" />
           <input style={input} value={nonce} onChange={(e) => setNonce(e.target.value)} placeholder="Nonce (blank = auto-generate)" />
           <input style={input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" />
+          <input style={{...input, gridColumn: "1 / -1"}} value={groupPubkey} onChange={(e) => setGroupPubkey(e.target.value)} placeholder="Group pubkey (hex) for aggregation/verify" />
         </div>
         <textarea
           style={{ ...input, marginTop: 8, minHeight: 80, width: "100%" }}
@@ -113,10 +222,13 @@ export default function KeyRotationDemoPage() {
           onChange={(e) => setGuardiansInput(e.target.value)}
           placeholder={"Guardians (one per line):\n1,npub1...\n2,npub1...\n3,npub1..."}
         />
-        <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={sendRotationRequest} disabled={sending} style={btn}>
             {sending ? "Sending..." : "Send rotation request via DM"}
           </button>
+          <button onClick={collectPartials} style={btn}>Collect matching partials</button>
+          <button onClick={aggregateProof} style={btn}>Aggregate Schnorr proof</button>
+          <button onClick={publishProof} style={btn}>Publish rotation proof</button>
           {sendResult && <span style={{ fontSize: 13, opacity: 0.9 }}>{sendResult}</span>}
         </div>
       </section>
@@ -143,10 +255,22 @@ export default function KeyRotationDemoPage() {
       <section style={box}>
         <h3 style={h3}>Step-by-step</h3>
         <ol>
-          <li>Use requester mode above to send `rotation-request` to guardians</li>
-          <li>In Messages, guardians open DM and click Confirm on request bubble</li>
-          <li>Collect `rotation-partial` replies in requester workflow</li>
+          <li>Send `rotation-request` to guardians</li>
+          <li>Guardians click Confirm in DM bubbles (with guardian share JSON set)</li>
+          <li>Click <strong>Collect matching partials</strong></li>
+          <li>Click <strong>Aggregate Schnorr proof</strong></li>
+          <li>Click <strong>Publish rotation proof</strong></li>
         </ol>
+      </section>
+
+      <section style={box}>
+        <h3 style={h3}>Collected partials</h3>
+        <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(partialRows, null, 2)}</pre>
+      </section>
+
+      <section style={box}>
+        <h3 style={h3}>Rotation proof payload</h3>
+        <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(proofPayload, null, 2)}</pre>
       </section>
 
       <section style={box}>
