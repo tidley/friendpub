@@ -42,6 +42,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [guardianShareJSON, setGuardianShareJSON] = useState("");
   const [secretInputs, setSecretInputs] = useState({});
   const [setupChoiceByMsg, setSetupChoiceByMsg] = useState({});
+  const [expandedMessages, setExpandedMessages] = useState({});
   const peerName =
     convo?.display_name?.substring(0, 10) ||
     convo?.name?.substring(0, 10) ||
@@ -246,19 +247,6 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             )}
           </div>
         )}
-        <div className="fit-container box-pad-h-m" style={{ paddingTop: 0 }}>
-          <details>
-            <summary className="pointer p-medium">Guardian settings (rotation demo)</summary>
-            <textarea
-              className="if ifs-full"
-              placeholder='{"id":1,"share":"...","threshold":2,"groupPubkey":"..."}'
-              value={guardianShareJSON}
-              onChange={(e) => setGuardianShareJSON(e.target.value)}
-              style={{ minHeight: "72px", marginTop: ".5rem" }}
-            />
-          </details>
-        </div>
-
         <div
           className="fx-centered fx-start-h fx-col box-pad-h-m box-pad-v-m fit-container"
           style={{
@@ -290,9 +278,15 @@ export function ConversationBox({ convo, back, noHeader = false }) {
               (typeof convo.content === "string" && convo.content) ||
               "";
             const rotationReq = parseRotationRequest(rawCandidate);
-            let isSelected = multiDeletion.includes(
-              convo.giftWrapId || convo.id,
-            );
+            const msgId = convo.giftWrapId || convo.id;
+            const isLongText =
+              typeof convo.content === "string" && convo.content.length > 380;
+            const isExpanded = !!expandedMessages[msgId];
+            const renderedContent =
+              typeof convo.content === "string" && isLongText && !isExpanded
+                ? `${convo.content.slice(0, 380)}…`
+                : convo.content;
+            let isSelected = multiDeletion.includes(msgId);
             let zIndex = convo.peer ? conversationLength - index : 0;
             return (
               <div
@@ -432,8 +426,29 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                         overflow: "visible",
                       }}
                     >
-                      {<div className="fit-container">{convo.content}</div> || (
-                        <LoadingDots />
+                      {<div
+                        className="fit-container"
+                        style={{
+                          overflowWrap: "anywhere",
+                          wordBreak: "break-word",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {renderedContent}
+                      </div> || <LoadingDots />}
+                      {isLongText && (
+                        <button
+                          className="btn btn-small btn-normal"
+                          style={{ alignSelf: "flex-start", marginTop: ".35rem" }}
+                          onClick={() =>
+                            setExpandedMessages((prev) => ({
+                              ...prev,
+                              [msgId]: !prev[msgId],
+                            }))
+                          }
+                        >
+                          {isExpanded ? "Show less" : "Show more"}
+                        </button>
                       )}
                       {rotationReq && convo.pubkey !== userKeys.pub && (
                         <div
@@ -454,22 +469,22 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                               <input
                                 className="if ifs-full"
                                 placeholder="Shared secret"
-                                value={secretInputs[convo.id] || ""}
+                                value={secretInputs[msgId] || ""}
                                 onChange={(e) =>
                                   setSecretInputs((prev) => ({
                                     ...prev,
-                                    [convo.id]: e.target.value,
+                                    [msgId]: e.target.value,
                                   }))
                                 }
                               />
                               {findGuardianSetupsForRequestV2(rotationReq).length > 1 && (
                                 <select
                                   className="if ifs-full"
-                                  value={`${setupChoiceByMsg[convo.id] || 0}`}
+                                  value={`${setupChoiceByMsg[msgId] || 0}`}
                                   onChange={(e) =>
                                     setSetupChoiceByMsg((prev) => ({
                                       ...prev,
-                                      [convo.id]: e.target.value,
+                                      [msgId]: e.target.value,
                                     }))
                                   }
                                 >
@@ -484,7 +499,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                           )}
                           <button
                             className="btn btn-normal"
-                            onClick={() => handleConfirmRotationRequest(rotationReq, convo.id)}
+                            onClick={() => handleConfirmRotationRequest(rotationReq, msgId)}
                           >
                             Confirm
                           </button>
