@@ -809,6 +809,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                   onChange={(e) => setSetupDraft((p) => ({ ...p, group_id: e.target.value }))} />
                 <input className="if ifs-full" style={{ marginTop: ".5rem" }} placeholder="group_pubkey (optional)" value={setupDraft.group_pubkey}
                   onChange={(e) => setSetupDraft((p) => ({ ...p, group_pubkey: e.target.value }))} />
+                <p className="p-medium gray-c" style={{ marginTop: ".25rem" }}>
+                  group_pubkey is optional for setup matching/confirmation, but required later for proof aggregation/verification.
+                </p>
                 <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem" }}>
                   <button className="btn btn-small" type="button" onClick={applyGuardianSetupToComposer}>Fill compose</button>
                   <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send now</button>

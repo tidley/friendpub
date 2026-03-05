@@ -151,13 +151,15 @@ Expected `guardian-setup` JSON shape (v1):
   "guardian_count": 3,
   "owner_old_npub": "npub1...",
   "guardian_npub": "npub1...",
-  "group_pubkey": "<hex>",
+  "group_pubkey": "<hex or empty string>",
   "participant_ids": [1,2,3],
   "status": "active"
 }
 ```
 
 Expected result: the guardian client has enough information stored (via DM history ingestion + cache) to later match recovery requests without the requester having to paste the group pubkey.
+
+Note: `group_pubkey` may be empty at setup time; that still allows matching/confirmation. It is only required at aggregation/verification time.
 
 ### B) Recovery request (new npub → guardians)
 1. Log into Yakihonne as **Requester (new npub)**.

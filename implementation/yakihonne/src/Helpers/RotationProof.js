@@ -178,7 +178,7 @@ export const parseGuardianSetupV1 = (raw) => {
   if (!Number.isInteger(guardian_id) || guardian_id < 1) errors.push("guardian_id must be positive integer");
   if (!isNpub(owner_old_npub)) errors.push("owner_old_npub must be npub (bech32)");
   if (!isNpub(guardian_npub)) errors.push("guardian_npub must be npub (bech32)");
-  if (!group_pubkey || !isHex(group_pubkey, 64)) errors.push("group_pubkey must be hex pubkey");
+  if (group_pubkey && !isHex(group_pubkey, 64)) errors.push("group_pubkey must be hex pubkey when provided");
 
   const record_id = buildGuardianSetupRecordId({ group_id, guardian_id, owner_old_npub });
   if (j.record_id && j.record_id.trim() !== record_id) {
@@ -188,6 +188,13 @@ export const parseGuardianSetupV1 = (raw) => {
   if (errors.length > 0) {
     console.warn("[guardian-setup] rejected", { errors, payload: j });
     return null;
+  }
+  if (!group_pubkey) {
+    console.warn("[guardian-setup] indexed without group_pubkey", {
+      group_id,
+      guardian_id,
+      owner_old_npub,
+    });
   }
 
   return {

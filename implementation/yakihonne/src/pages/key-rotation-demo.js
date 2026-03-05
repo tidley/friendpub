@@ -151,7 +151,7 @@ export default function KeyRotationDemoPage() {
       const setupForGroup =
         indexedSetups.find((s) => s.group_id === derivedGroupId) || selectedSetup;
       if (!setupForGroup?.group_pubkey)
-        throw new Error("group setup/group pubkey not found in indexed DM history");
+        throw new Error("group_pubkey missing for selected setup. Recovery request can still be sent, but aggregation requires group_pubkey.");
 
       const req = {
         old_npub:
@@ -319,6 +319,11 @@ export default function KeyRotationDemoPage() {
               </option>
             ))}
           </select>
+          {!recoveryMode && selectedSetup && !selectedSetup.group_pubkey && (
+            <p className="p-medium" style={{ color: "#ffcc80", marginTop: 6 }}>
+              Selected setup has no group_pubkey. You can send recovery requests, but aggregation/publish will be blocked until group_pubkey is available.
+            </p>
+          )}
         </div>
 
         <div style={{ marginTop: 8 }}>
