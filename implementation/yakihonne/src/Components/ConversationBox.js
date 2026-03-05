@@ -173,10 +173,27 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     localStorage.setItem(GROUP_PAIR_KEY, JSON.stringify({ group_id, group_pubkey }));
   };
 
+  const getRandomPrivateKeyBytes = () => {
+    if (secp?.utils?.randomPrivateKey) return secp.utils.randomPrivateKey();
+    if (secp?.etc?.randomBytes) return secp.etc.randomBytes(32);
+    const arr = new Uint8Array(32);
+    if (typeof crypto !== "undefined" && crypto?.getRandomValues) {
+      crypto.getRandomValues(arr);
+      return arr;
+    }
+    throw new Error("No secure random source available");
+  };
+
+  const deriveCompressedPubkeyHex = (privBytes) => {
+    if (secp?.getPublicKey) return secp.getPublicKey(privBytes, true);
+    if (secp?.Point?.fromPrivateKey) return secp.Point.fromPrivateKey(privBytes).toHex(true);
+    throw new Error("No secp256k1 pubkey derivation API available");
+  };
+
   const handleGenerateGroup = () => {
     try {
-      const sk = secp.utils.randomSecretKey();
-      const group_pubkey = secp.Point.fromPrivateKey(sk).toHex(true);
+      const sk = getRandomPrivateKeyBytes();
+      const group_pubkey = deriveCompressedPubkeyHex(sk);
       const group_id = `g_${group_pubkey.slice(0, 20)}`;
       setSetupDraft((prev) => ({ ...prev, group_id, group_pubkey }));
       persistGroupPair(group_id, group_pubkey);
