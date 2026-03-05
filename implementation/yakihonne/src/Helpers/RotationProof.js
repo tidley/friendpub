@@ -13,6 +13,7 @@ const hexToBytes = (h) => secp.etc.hexToBytes(h);
 const numTo32b = (x) => secp.etc.numberToBytesBE(mod(x), 32);
 const Hn = (...parts) =>
   mod(secp.etc.bytesToNumberBE(sha256(secp.etc.concatBytes(...parts))));
+const sha256Hex = (s) => secp.etc.bytesToHex(sha256(utf8ToBytes(s)));
 
 const lagrangeCoef = (id, ids) => {
   const xi = BigInt(id);
@@ -77,6 +78,65 @@ export const verifyRotationProof = (req, sig, groupPubkey) => {
   return G.multiply(z).equals(R.add(X.multiply(c)));
 };
 
+const parseJSONCandidate = (raw) => {
+  try {
+    let candidate = raw;
+    if (typeof candidate !== "string" && typeof candidate !== "object") return null;
+    if (typeof candidate === "string") {
+      const s = candidate.trim();
+      try {
+        candidate = JSON.parse(s);
+      } catch {
+        const start = s.indexOf("{");
+        const end = s.lastIndexOf("}");
+        if (start >= 0 && end > start) candidate = JSON.parse(s.slice(start, end + 1));
+        else return null;
+      }
+    }
+    return candidate;
+  } catch {
+    return null;
+  }
+};
+
+export const deriveGuardianSecretProof = ({
+  sharedSecret,
+  req_id,
+  nonce,
+  group_id,
+  guardian_id,
+}) => {
+  if (!sharedSecret || !req_id || !nonce || !group_id || !guardian_id) return "";
+  return sha256Hex(`${sharedSecret}|${req_id}|${nonce}|${group_id}|${guardian_id}`);
+};
+
+export const buildRotationAttestationV2 = ({ req, setup, share }) => {
+  if (!req?.req_id || !req?.new_npub || !req?.nonce) throw new Error("invalid request");
+  if (!setup?.group_id || !setup?.owner_old_npub) throw new Error("invalid setup");
+  const partial = buildRotationPartial(
+    {
+      old_npub: setup.owner_old_npub,
+      new_npub: req.new_npub,
+      nonce: req.nonce,
+      participant_ids: setup.participant_ids || [1, 2, 3],
+    },
+    share,
+  );
+  return {
+    type: "rotation-attestation",
+    version: 2,
+    req_id: req.req_id,
+    record_id: setup.record_id,
+    group_id: setup.group_id,
+    guardian_id: Number(setup.guardian_id),
+    old_npub: setup.owner_old_npub,
+    new_npub: req.new_npub,
+    nonce: req.nonce,
+    partial,
+    created_at: Math.floor(Date.now() / 1000),
+  };
+};
+
 export const parseRotationPartial = (raw) => {
   try {
     const j = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -93,34 +153,98 @@ export const parseRotationPartial = (raw) => {
   }
 };
 
+export const parseGuardianSetupV1 = (raw) => {
+  const j = parseJSONCandidate(raw);
+  if (!j || j.type !== "guardian-setup" || Number(j.version) !== 1) return null;
+  if (!j.group_id || !Number.isInteger(Number(j.guardian_id)) || !j.group_pubkey || !j.owner_old_npub) return null;
+  const guardian_id = Number(j.guardian_id);
+  const record_id =
+    j.record_id || sha256Hex(`${j.group_id}|${guardian_id}|${(j.owner_old_npub || "").trim()}`);
+  return {
+    ...j,
+    version: 1,
+    type: "guardian-setup",
+    record_id,
+    group_id: (j.group_id || "").trim(),
+    guardian_id,
+    threshold: Number(j.threshold || 2),
+    guardian_count: Number(j.guardian_count || 3),
+    owner_old_npub: (j.owner_old_npub || "").trim(),
+    guardian_npub: (j.guardian_npub || "").trim(),
+    group_pubkey: (j.group_pubkey || "").trim(),
+    participant_ids: Array.isArray(j.participant_ids) ? j.participant_ids.map(Number) : [1, 2, 3],
+    status: j.status || "active",
+    updated_at: Number(j.updated_at || j.created_at || Math.floor(Date.now() / 1000)),
+    created_at: Number(j.created_at || Math.floor(Date.now() / 1000)),
+  };
+};
+
+export const parseGuardianSetupUpdateV1 = (raw) => {
+  const j = parseJSONCandidate(raw);
+  if (!j || j.type !== "guardian-setup-update" || Number(j.version) !== 1) return null;
+  if (!j.record_id || !j.group_id || !Number.isInteger(Number(j.guardian_id))) return null;
+  return {
+    ...j,
+    version: 1,
+    type: "guardian-setup-update",
+    record_id: (j.record_id || "").trim(),
+    group_id: (j.group_id || "").trim(),
+    guardian_id: Number(j.guardian_id),
+    status: j.status || "active",
+    updated_at: Number(j.updated_at || j.created_at || Math.floor(Date.now() / 1000)),
+  };
+};
+
+export const parseRotationRequestV2 = (raw) => {
+  const j = parseJSONCandidate(raw);
+  if (!j || j.type !== "rotation-request" || Number(j.version) !== 2) return null;
+  if (!j.req_id || !j.group_id || !Number.isInteger(Number(j.guardian_id)) || !j.new_npub || !j.secret_proof || !j.nonce) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const expires = Number(j.expires_at || 0);
+  if (expires && expires < now - 300) return null;
+  return {
+    ...j,
+    version: 2,
+    type: "rotation-request",
+    req_id: (j.req_id || "").trim(),
+    group_id: (j.group_id || "").trim(),
+    guardian_id: Number(j.guardian_id),
+    new_npub: (j.new_npub || "").trim(),
+    secret_proof: (j.secret_proof || "").trim(),
+    nonce: (j.nonce || "").trim(),
+    created_at: Number(j.created_at || now),
+    expires_at: expires || now + 3600,
+  };
+};
+
+export const parseRotationAttestationV2 = (raw) => {
+  const j = parseJSONCandidate(raw);
+  if (!j || j.type !== "rotation-attestation" || Number(j.version) !== 2) return null;
+  if (!j.req_id || !j.group_id || !Number.isInteger(Number(j.guardian_id)) || !j.old_npub || !j.new_npub || !j.nonce) return null;
+  if (!j.partial?.id || !j.partial?.R_i || !j.partial?.z_i) return null;
+  return {
+    ...j,
+    version: 2,
+    type: "rotation-attestation",
+    guardian_id: Number(j.guardian_id),
+    old_npub: (j.old_npub || "").trim(),
+    new_npub: (j.new_npub || "").trim(),
+    nonce: (j.nonce || "").trim(),
+  };
+};
+
 export const parseRotationRequest = (raw) => {
+  const v2 = parseRotationRequestV2(raw);
+  if (v2) return v2;
   try {
-    let candidate = raw;
-    if (typeof candidate !== "string" && typeof candidate !== "object") return null;
-
-    if (typeof candidate === "string") {
-      const s = candidate.trim();
-      // try whole string JSON
-      try {
-        candidate = JSON.parse(s);
-      } catch {
-        // fallback: extract first JSON object block
-        const start = s.indexOf("{");
-        const end = s.lastIndexOf("}");
-        if (start >= 0 && end > start) {
-          candidate = JSON.parse(s.slice(start, end + 1));
-        } else {
-          return null;
-        }
-      }
-    }
-
+    const candidate = parseJSONCandidate(raw);
     if (candidate?.type !== "rotation-request") return null;
     return {
       ...candidate,
       old_npub: (candidate.old_npub || "").trim(),
       new_npub: (candidate.new_npub || "").trim(),
       nonce: (candidate.nonce || "").trim(),
+      version: Number(candidate.version || 1),
     };
   } catch {
     return null;

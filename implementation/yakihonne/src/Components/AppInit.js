@@ -118,6 +118,7 @@ import {
 import { getTrendingUsers24h } from "@/Helpers/WSInstance";
 import { savedToolsIdentifier } from "@/Content/Extras";
 import { decryptDMSWorker } from "@/workers/decryptDMWorker";
+import { ingestGuardianSetupsFromChatrooms } from "@/Helpers/GuardianSetupIndex";
 
 export default function AppInit() {
   const dispatch = useDispatch();
@@ -238,6 +239,7 @@ export default function AppInit() {
     ) {
       previousChatrooms.current = chatrooms;
       dispatch(setUserChatrooms(chatrooms));
+      ingestGuardianSetupsFromChatrooms(chatrooms);
     }
     if (JSON.stringify(previousRelays.current) !== JSON.stringify(relays)) {
       previousRelays.current = relays;

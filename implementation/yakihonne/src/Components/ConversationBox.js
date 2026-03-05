@@ -11,7 +11,16 @@ import { deleteMessage, sendMessage } from "@/Helpers/DMHelpers";
 import OptionsDropdown from "./OptionsDropdown";
 import { copyText } from "@/Helpers/Helpers";
 import DeleteWarning from "./DeleteWarning";
-import { buildRotationPartial, parseRotationRequest } from "@/Helpers/RotationProof";
+import {
+  buildRotationAttestationV2,
+  buildRotationPartial,
+  deriveGuardianSecretProof,
+  parseRotationRequest,
+} from "@/Helpers/RotationProof";
+import {
+  findGuardianSetupsForRequestV2,
+  ingestGuardianSetupsFromConversation,
+} from "@/Helpers/GuardianSetupIndex";
 
 export function ConversationBox({ convo, back, noHeader = false }) {
   let conversationLength = convo.convo.length;
@@ -31,6 +40,8 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [multiDeletion, setMultiDeletion] = useState([]);
   const [showDelete, setShowDelete] = useState(false);
   const [guardianShareJSON, setGuardianShareJSON] = useState("");
+  const [secretInputs, setSecretInputs] = useState({});
+  const [setupChoiceByMsg, setSetupChoiceByMsg] = useState({});
   const peerName =
     convo?.display_name?.substring(0, 10) ||
     convo?.name?.substring(0, 10) ||
@@ -88,8 +99,44 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     }
   }, [guardianShareJSON]);
 
-  const handleConfirmRotationRequest = async (rotationReq) => {
+  useEffect(() => {
+    if (convo?.convo?.length) ingestGuardianSetupsFromConversation(convo);
+  }, [convo]);
+
+  const handleConfirmRotationRequest = async (rotationReq, msgId) => {
     try {
+      setShowProgress(true);
+      if (Number(rotationReq?.version) === 2) {
+        if (!guardianShareJSON) throw new Error("Missing guardian share JSON");
+        const share = JSON.parse(guardianShareJSON);
+        const candidates = findGuardianSetupsForRequestV2(rotationReq);
+        if (candidates.length === 0)
+          throw new Error("No guardian setup found for this request");
+        const chosen =
+          candidates.find(
+            (_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`,
+          ) || candidates[0];
+        const typedSecret = (secretInputs[msgId] || "").trim();
+        if (!typedSecret) throw new Error("Enter shared secret");
+        const proof = deriveGuardianSecretProof({
+          sharedSecret: typedSecret,
+          req_id: rotationReq.req_id,
+          nonce: rotationReq.nonce,
+          group_id: rotationReq.group_id,
+          guardian_id: rotationReq.guardian_id,
+        });
+        if (proof !== rotationReq.secret_proof)
+          throw new Error("Shared secret does not match");
+        const payload = buildRotationAttestationV2({
+          req: rotationReq,
+          setup: chosen,
+          share,
+        });
+        await sendMessage(convo.pubkey, JSON.stringify(payload));
+        setShowProgress(false);
+        return;
+      }
+
       if (!guardianShareJSON) throw new Error("Missing guardian share JSON");
       const share = JSON.parse(guardianShareJSON);
       const partial = buildRotationPartial(rotationReq, share);
@@ -100,7 +147,6 @@ export function ConversationBox({ convo, back, noHeader = false }) {
         nonce: rotationReq.nonce,
         partial,
       };
-      setShowProgress(true);
       await sendMessage(convo.pubkey, JSON.stringify(payload));
       setShowProgress(false);
     } catch (e) {
@@ -392,12 +438,53 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                       {rotationReq && convo.pubkey !== userKeys.pub && (
                         <div
                           className="fit-container fx-scattered box-pad-v-s"
-                          style={{ borderTop: "1px solid var(--dim-gray)", marginTop: ".5rem" }}
+                          style={{
+                            borderTop: "1px solid var(--dim-gray)",
+                            marginTop: ".5rem",
+                            rowGap: ".5rem",
+                            flexDirection: "column",
+                            alignItems: "stretch",
+                          }}
                         >
-                          <p className="p-medium gray-c">rotation-request</p>
+                          <p className="p-medium gray-c">
+                            rotation-request{rotationReq?.version ? ` v${rotationReq.version}` : ""}
+                          </p>
+                          {Number(rotationReq?.version) === 2 && (
+                            <>
+                              <input
+                                className="if ifs-full"
+                                placeholder="Shared secret"
+                                value={secretInputs[convo.id] || ""}
+                                onChange={(e) =>
+                                  setSecretInputs((prev) => ({
+                                    ...prev,
+                                    [convo.id]: e.target.value,
+                                  }))
+                                }
+                              />
+                              {findGuardianSetupsForRequestV2(rotationReq).length > 1 && (
+                                <select
+                                  className="if ifs-full"
+                                  value={`${setupChoiceByMsg[convo.id] || 0}`}
+                                  onChange={(e) =>
+                                    setSetupChoiceByMsg((prev) => ({
+                                      ...prev,
+                                      [convo.id]: e.target.value,
+                                    }))
+                                  }
+                                >
+                                  {findGuardianSetupsForRequestV2(rotationReq).map((r, idx) => (
+                                    <option value={`${idx}`} key={r.record_id || idx}>
+                                      {r.group_id} • guardian #{r.guardian_id}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                            </>
+                          )}
                           <button
                             className="btn btn-normal"
-                            onClick={() => handleConfirmRotationRequest(rotationReq)}
+                            onClick={() => handleConfirmRotationRequest(rotationReq, convo.id)}
                           >
                             Confirm
                           </button>
