@@ -13,6 +13,8 @@ import OptionsDropdown from "./OptionsDropdown";
 import { copyText } from "@/Helpers/Helpers";
 import DeleteWarning from "./DeleteWarning";
 import {
+  buildGuardianGroupId,
+  buildGuardianSetupRecordId,
   buildRotationAttestationV2,
   buildRotationPartial,
   deriveGuardianSecretProof,
@@ -20,6 +22,7 @@ import {
 } from "@/Helpers/RotationProof";
 import {
   findGuardianSetupsForRequestV2,
+  getActiveGuardianSetups,
   ingestGuardianSetupsFromConversation,
 } from "@/Helpers/GuardianSetupIndex";
 
@@ -114,12 +117,18 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   }, [convo]);
 
   useEffect(() => {
-    if (!setupDraft.group_id && userKeys?.pub) {
-      const npub = nip19.npubEncode(userKeys.pub);
-      const gid = `g2of3-${npub.slice(0, 12)}-${Date.now().toString(36)}`;
+    if (!setupDraft.group_id && userKeys?.pub && convo?.pubkey) {
+      const ownerNpub = nip19.npubEncode(userKeys.pub);
+      const guardianNpub = nip19.npubEncode(convo.pubkey);
+      const gid = buildGuardianGroupId({
+        owner_old_npub: ownerNpub,
+        guardian_npub: guardianNpub,
+        threshold: setupDraft.threshold,
+        guardian_count: setupDraft.guardian_count,
+      });
       setSetupDraft((prev) => ({ ...prev, group_id: gid }));
     }
-  }, [userKeys]);
+  }, [userKeys, convo?.pubkey]);
 
   const buildGuardianSetupPayload = () => {
     if (!userKeys?.pub) throw new Error("login required");
@@ -131,7 +140,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     return {
       type: "guardian-setup",
       version: 1,
-      record_id: `${group_id}:${guardian_id}:${owner_old_npub}`,
+      record_id: buildGuardianSetupRecordId({ group_id, guardian_id, owner_old_npub }),
       group_id,
       guardian_id,
       threshold: Number(setupDraft.threshold || 2),
@@ -175,9 +184,20 @@ export function ConversationBox({ convo, back, noHeader = false }) {
       if (Number(rotationReq?.version) === 2) {
         if (!guardianShareJSON) throw new Error("Missing guardian share JSON");
         const share = JSON.parse(guardianShareJSON);
-        const candidates = findGuardianSetupsForRequestV2(rotationReq);
-        if (candidates.length === 0)
-          throw new Error("No guardian setup found for this request");
+        let candidates = findGuardianSetupsForRequestV2(rotationReq);
+        if (candidates.length === 0) {
+          const fallback = getActiveGuardianSetups().filter(
+            (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+          );
+          if (fallback.length === 0)
+            throw new Error("No guardian setup found for this request");
+          candidates = fallback;
+          console.warn("[guardian-recovery] using fallback setup candidates", {
+            guardian_id: rotationReq.guardian_id,
+            req_id: rotationReq.req_id,
+            count: fallback.length,
+          });
+        }
         const typedSecret = (secretInputs[msgId] || "").trim();
         if (!typedSecret) throw new Error("Enter shared secret");
         const validCandidates = candidates.filter((c) => {
@@ -348,6 +368,16 @@ export function ConversationBox({ convo, back, noHeader = false }) {
               "";
             const rotationReq = parseRotationRequest(rawCandidate);
             const msgId = convo.giftWrapId || convo.id;
+            const setupCandidatesForUi =
+              Number(rotationReq?.version) === 2
+                ? (() => {
+                    const strict = findGuardianSetupsForRequestV2(rotationReq);
+                    if (strict.length > 0) return strict;
+                    return getActiveGuardianSetups().filter(
+                      (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+                    );
+                  })()
+                : [];
             const isLongText =
               typeof convo.content === "string" && convo.content.length > 380;
             const isExpanded = !!expandedMessages[msgId];
@@ -546,7 +576,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                                   }))
                                 }
                               />
-                              {findGuardianSetupsForRequestV2(rotationReq).length > 1 && (
+                              {setupCandidatesForUi.length > 1 && (
                                 <select
                                   className="if ifs-full"
                                   value={`${setupChoiceByMsg[msgId] || 0}`}
@@ -557,9 +587,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                                     }))
                                   }
                                 >
-                                  {findGuardianSetupsForRequestV2(rotationReq).map((r, idx) => (
+                                  {setupCandidatesForUi.map((r, idx) => (
                                     <option value={`${idx}`} key={r.record_id || idx}>
-                                      {r.group_id} • guardian #{r.guardian_id}
+                                      {r.group_id || "(no group id)"} • {r.owner_old_npub?.slice(0, 16)}... • guardian #{r.guardian_id}
                                     </option>
                                   ))}
                                 </select>

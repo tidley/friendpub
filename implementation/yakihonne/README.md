@@ -139,6 +139,24 @@ Tip: use separate browser profiles or incognito windows so session storage doesn
    - `threshold: 2`, `guardian_count: 3`
 4. On each guardian account, open Yakihonne and open the DM thread so the web client can **ingest the setup DM from DM history**.
 
+Expected `guardian-setup` JSON shape (v1):
+```json
+{
+  "type": "guardian-setup",
+  "version": 1,
+  "record_id": "<sha256(group_id|guardian_id|owner_old_npub)>",
+  "group_id": "g_<hash>",
+  "guardian_id": 1,
+  "threshold": 2,
+  "guardian_count": 3,
+  "owner_old_npub": "npub1...",
+  "guardian_npub": "npub1...",
+  "group_pubkey": "<hex>",
+  "participant_ids": [1,2,3],
+  "status": "active"
+}
+```
+
 Expected result: the guardian client has enough information stored (via DM history ingestion + cache) to later match recovery requests without the requester having to paste the group pubkey.
 
 ### B) Recovery request (new npub → guardians)
@@ -151,6 +169,22 @@ Expected result: the guardian client has enough information stored (via DM histo
    - `guardian_id`, `old_npub`, `new_npub`, `nonce`, `expires_at`, and `secret_proof`
    - `group_id` may be omitted/null in recovery mode.
 4. `secret_proof` uses guardian-specific secrets and is validated by guardians against candidate setup records.
+
+Expected `rotation-request` JSON shape (v2):
+```json
+{
+  "type": "rotation-request",
+  "version": 2,
+  "req_id": "<uuid>",
+  "group_id": "g_<hash> or null",
+  "guardian_id": 1,
+  "old_npub": "npub1...",
+  "new_npub": "npub1...",
+  "nonce": "<uuid>",
+  "expires_at": 1760000000,
+  "secret_proof": "<sha256(secret|req_id|nonce|group_id_or_old_npub|guardian_id)>"
+}
+```
 
 ### C) Guardian confirmation (guardians → requester)
 1. Each guardian opens the DM thread with the requester.

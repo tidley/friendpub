@@ -71,6 +71,18 @@ export const ingestGuardianSetupsFromChatrooms = (chatrooms = []) => {
       const raw = msg?.raw_content || msg?.content;
       const setup = parseGuardianSetupV1(raw);
       const update = parseGuardianSetupUpdateV1(raw);
+      const looksLikeSetup =
+        typeof raw === "string" &&
+        (raw.includes('"type":"guardian-setup"') || raw.includes('"type": "guardian-setup"'));
+      const looksLikeUpdate =
+        typeof raw === "string" &&
+        (raw.includes('"type":"guardian-setup-update"') || raw.includes('"type": "guardian-setup-update"'));
+      if (looksLikeSetup && !setup) {
+        console.warn("[guardian-setup-index] setup message not indexed", { msgId, room: room?.pubkey });
+      }
+      if (looksLikeUpdate && !update) {
+        console.warn("[guardian-setup-index] setup-update message not indexed", { msgId, room: room?.pubkey });
+      }
       if (setup) applySetup(index, setup, msg);
       if (update) applyUpdate(index, update, msg);
       index.seen[msgId] = 1;

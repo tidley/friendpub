@@ -14,6 +14,13 @@ const numTo32b = (x) => secp.etc.numberToBytesBE(mod(x), 32);
 const Hn = (...parts) =>
   mod(secp.etc.bytesToNumberBE(sha256(secp.etc.concatBytes(...parts))));
 const sha256Hex = (s) => secp.etc.bytesToHex(sha256(utf8ToBytes(s)));
+const isNpub = (v) => typeof v === "string" && /^npub1[023456789acdefghjklmnpqrstuvwxyz]{20,}$/i.test(v.trim());
+const isHex = (v, min = 2) => typeof v === "string" && /^[0-9a-f]+$/i.test(v) && v.length >= min;
+
+export const buildGuardianSetupRecordId = ({ group_id, guardian_id, owner_old_npub }) =>
+  sha256Hex(`${(group_id || "").trim()}|${Number(guardian_id)}|${(owner_old_npub || "").trim()}`);
+export const buildGuardianGroupId = ({ owner_old_npub, guardian_npub, threshold = 2, guardian_count = 3 }) =>
+  `g_${sha256Hex(`${owner_old_npub}|${guardian_npub}|${threshold}|${guardian_count}`).slice(0, 20)}`;
 
 const lagrangeCoef = (id, ids) => {
   const xi = BigInt(id);
@@ -159,22 +166,42 @@ export const parseRotationPartial = (raw) => {
 export const parseGuardianSetupV1 = (raw) => {
   const j = parseJSONCandidate(raw);
   if (!j || j.type !== "guardian-setup" || Number(j.version) !== 1) return null;
-  if (!j.group_id || !Number.isInteger(Number(j.guardian_id)) || !j.group_pubkey || !j.owner_old_npub) return null;
+
+  const errors = [];
+  const group_id = (j.group_id || "").trim();
+  const owner_old_npub = (j.owner_old_npub || "").trim();
+  const guardian_npub = (j.guardian_npub || "").trim();
+  const group_pubkey = (j.group_pubkey || "").trim();
   const guardian_id = Number(j.guardian_id);
-  const record_id =
-    j.record_id || sha256Hex(`${j.group_id}|${guardian_id}|${(j.owner_old_npub || "").trim()}`);
+
+  if (!group_id || !/^g_[0-9a-f]{8,}$/i.test(group_id)) errors.push("group_id must be opaque id like g_<hash>");
+  if (!Number.isInteger(guardian_id) || guardian_id < 1) errors.push("guardian_id must be positive integer");
+  if (!isNpub(owner_old_npub)) errors.push("owner_old_npub must be npub (bech32)");
+  if (!isNpub(guardian_npub)) errors.push("guardian_npub must be npub (bech32)");
+  if (!group_pubkey || !isHex(group_pubkey, 64)) errors.push("group_pubkey must be hex pubkey");
+
+  const record_id = buildGuardianSetupRecordId({ group_id, guardian_id, owner_old_npub });
+  if (j.record_id && j.record_id.trim() !== record_id) {
+    errors.push("record_id mismatch (expected deterministic sha256)");
+  }
+
+  if (errors.length > 0) {
+    console.warn("[guardian-setup] rejected", { errors, payload: j });
+    return null;
+  }
+
   return {
     ...j,
     version: 1,
     type: "guardian-setup",
     record_id,
-    group_id: (j.group_id || "").trim(),
+    group_id,
     guardian_id,
     threshold: Number(j.threshold || 2),
     guardian_count: Number(j.guardian_count || 3),
-    owner_old_npub: (j.owner_old_npub || "").trim(),
-    guardian_npub: (j.guardian_npub || "").trim(),
-    group_pubkey: (j.group_pubkey || "").trim(),
+    owner_old_npub,
+    guardian_npub,
+    group_pubkey,
     participant_ids: Array.isArray(j.participant_ids) ? j.participant_ids.map(Number) : [1, 2, 3],
     status: j.status || "active",
     updated_at: Number(j.updated_at || j.created_at || Math.floor(Date.now() / 1000)),
@@ -185,7 +212,10 @@ export const parseGuardianSetupV1 = (raw) => {
 export const parseGuardianSetupUpdateV1 = (raw) => {
   const j = parseJSONCandidate(raw);
   if (!j || j.type !== "guardian-setup-update" || Number(j.version) !== 1) return null;
-  if (!j.record_id || !j.group_id || !Number.isInteger(Number(j.guardian_id))) return null;
+  if (!j.record_id || !j.group_id || !Number.isInteger(Number(j.guardian_id))) {
+    console.warn("[guardian-setup-update] rejected", { reason: "missing required fields", payload: j });
+    return null;
+  }
   return {
     ...j,
     version: 1,
