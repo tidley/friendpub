@@ -18,7 +18,9 @@ import {
   buildRotationAttestationV2,
   buildRotationPartial,
   deriveGuardianSecretProof,
+  parseRotationAttestationV2,
   parseRotationRequest,
+  parseRotationRequestV2,
 } from "@/Helpers/RotationProof";
 import {
   findGuardianSetupsForRequestV2,
@@ -32,6 +34,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const { t } = useTranslation();
   const convoContainerRef = useRef(null);
   const inputFieldRef = useRef(null);
+  const jsonWarnedRef = useRef(new Set());
   const [message, setMessage] = useState("");
   const [legacy, setLegacy] = useState(
     userKeys.sec || window?.nostr?.nip44
@@ -76,8 +79,37 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     }
   }, [message]);
 
+  const protocolTypes = new Set([
+    "guardian-setup",
+    "guardian-setup-update",
+    "rotation-request",
+    "rotation-attestation",
+  ]);
+
+  const getProtocolTypeFromRaw = (raw) => {
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (parsed && protocolTypes.has(parsed.type) && parsed.version) return parsed.type;
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const devJsonAssert = (raw, context) => {
+    if (typeof raw !== "string") return;
+    const s = raw.trim();
+    if (!(s.startsWith("{") && s.endsWith("}"))) return;
+    try {
+      JSON.parse(s);
+    } catch (e) {
+      console.warn(`[dm-json] parse failed (${context})`, e?.message, s.slice(0, 300));
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!message || !convo.pubkey) return;
+    devJsonAssert(message, "send");
     setShowProgress(true);
     await sendMessage(convo.pubkey, message, replyOn?.id);
     setMessage("");
@@ -168,8 +200,10 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const sendGuardianSetupNow = async () => {
     try {
       const payload = buildGuardianSetupPayload();
+      const payloadText = JSON.stringify(payload);
+      devJsonAssert(payloadText, "guardian-setup-send");
       setShowProgress(true);
-      await sendMessage(convo.pubkey, JSON.stringify(payload));
+      await sendMessage(convo.pubkey, payloadText);
       setShowProgress(false);
       setShowSetupBuilder(false);
     } catch (e) {
@@ -217,12 +251,14 @@ export function ConversationBox({ convo, back, noHeader = false }) {
           validCandidates.find(
             (_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`,
           ) || validCandidates[0];
-        const payload = buildRotationAttestationV2({
+          const payload = buildRotationAttestationV2({
           req: rotationReq,
           setup: chosen,
           share,
         });
-        await sendMessage(convo.pubkey, JSON.stringify(payload));
+        const payloadText = JSON.stringify(payload);
+        devJsonAssert(payloadText, "rotation-attestation-send");
+        await sendMessage(convo.pubkey, payloadText);
         setShowProgress(false);
         return;
       }
@@ -237,7 +273,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
         nonce: rotationReq.nonce,
         partial,
       };
-      await sendMessage(convo.pubkey, JSON.stringify(payload));
+      const payloadText = JSON.stringify(payload);
+      devJsonAssert(payloadText, "rotation-partial-send");
+      await sendMessage(convo.pubkey, payloadText);
       setShowProgress(false);
     } catch (e) {
       setShowProgress(false);
@@ -368,6 +406,17 @@ export function ConversationBox({ convo, back, noHeader = false }) {
               "";
             const rotationReq = parseRotationRequest(rawCandidate);
             const msgId = convo.giftWrapId || convo.id;
+            const protocolType = getProtocolTypeFromRaw(rawCandidate);
+            if (!jsonWarnedRef.current.has(msgId) && protocolType) {
+              devJsonAssert(rawCandidate, `render-${protocolType}`);
+              const parsedReq = parseRotationRequestV2(rawCandidate);
+              const parsedAtt = parseRotationAttestationV2(rawCandidate);
+              if (protocolType === "rotation-request" && !parsedReq)
+                console.warn("[dm-json] rotation-request visible but parser rejected", { msgId });
+              if (protocolType === "rotation-attestation" && !parsedAtt)
+                console.warn("[dm-json] rotation-attestation visible but parser rejected", { msgId });
+              jsonWarnedRef.current.add(msgId);
+            }
             const setupCandidatesForUi =
               Number(rotationReq?.version) === 2
                 ? (() => {
@@ -378,13 +427,18 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                     );
                   })()
                 : [];
-            const isLongText =
-              typeof convo.content === "string" && convo.content.length > 380;
+            const sourceText =
+              protocolType && typeof rawCandidate === "string"
+                ? rawCandidate
+                : typeof convo.content === "string"
+                  ? convo.content
+                  : "";
+            const isLongText = typeof sourceText === "string" && sourceText.length > 380;
             const isExpanded = !!expandedMessages[msgId];
             const renderedContent =
-              typeof convo.content === "string" && isLongText && !isExpanded
-                ? `${convo.content.slice(0, 380)}…`
-                : convo.content;
+              typeof sourceText === "string" && isLongText && !isExpanded
+                ? `${sourceText.slice(0, 380)}…`
+                : sourceText || convo.content;
             let isSelected = multiDeletion.includes(msgId);
             let zIndex = convo.peer ? conversationLength - index : 0;
             return (
@@ -525,16 +579,32 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                         overflow: "visible",
                       }}
                     >
-                      {<div
-                        className="fit-container"
-                        style={{
-                          overflowWrap: "anywhere",
-                          wordBreak: "break-word",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {renderedContent}
-                      </div> || <LoadingDots />}
+                      {protocolType ? (
+                        <pre
+                          className="fit-container"
+                          style={{
+                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                            fontSize: "12px",
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            whiteSpace: "pre-wrap",
+                            margin: 0,
+                          }}
+                        >
+                          {renderedContent}
+                        </pre>
+                      ) : (
+                        <div
+                          className="fit-container"
+                          style={{
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {renderedContent}
+                        </div>
+                      ) || <LoadingDots />}
                       {isLongText && (
                         <button
                           className="btn btn-small btn-normal"
