@@ -93,7 +93,13 @@ export const findGuardianSetupsForRequestV2 = (request) => {
   const req = parseRotationRequestV2(request);
   if (!req) return [];
   const rows = getActiveGuardianSetups();
-  return rows.filter(
+  const strict = rows.filter(
     (r) => r.group_id === req.group_id && Number(r.guardian_id) === Number(req.guardian_id),
+  );
+  if (strict.length > 0) return strict;
+  return rows.filter(
+    (r) =>
+      Number(r.guardian_id) === Number(req.guardian_id) &&
+      (!!req.old_npub_hint ? r.owner_old_npub === req.old_npub_hint : true),
   );
 };

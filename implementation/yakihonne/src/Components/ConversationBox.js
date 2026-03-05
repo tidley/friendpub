@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
+import { nip19 } from "nostr-tools";
 import UserProfilePic from "@/Components/UserProfilePic";
 import Date_ from "@/Components/Date_";
 import LoadingDots from "@/Components/LoadingDots";
@@ -43,6 +44,14 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [secretInputs, setSecretInputs] = useState({});
   const [setupChoiceByMsg, setSetupChoiceByMsg] = useState({});
   const [expandedMessages, setExpandedMessages] = useState({});
+  const [showSetupBuilder, setShowSetupBuilder] = useState(false);
+  const [setupDraft, setSetupDraft] = useState({
+    guardian_id: 1,
+    threshold: 2,
+    guardian_count: 3,
+    group_id: "",
+    group_pubkey: "",
+  });
   const peerName =
     convo?.display_name?.substring(0, 10) ||
     convo?.name?.substring(0, 10) ||
@@ -103,6 +112,62 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   useEffect(() => {
     if (convo?.convo?.length) ingestGuardianSetupsFromConversation(convo);
   }, [convo]);
+
+  useEffect(() => {
+    if (!setupDraft.group_id && userKeys?.pub) {
+      const npub = nip19.npubEncode(userKeys.pub);
+      const gid = `g2of3-${npub.slice(0, 12)}-${Date.now().toString(36)}`;
+      setSetupDraft((prev) => ({ ...prev, group_id: gid }));
+    }
+  }, [userKeys]);
+
+  const buildGuardianSetupPayload = () => {
+    if (!userKeys?.pub) throw new Error("login required");
+    const owner_old_npub = nip19.npubEncode(userKeys.pub);
+    const guardian_npub = nip19.npubEncode(convo.pubkey);
+    const guardian_id = Number(setupDraft.guardian_id || 1);
+    const group_id = (setupDraft.group_id || "").trim();
+    if (!group_id) throw new Error("group_id required");
+    return {
+      type: "guardian-setup",
+      version: 1,
+      record_id: `${group_id}:${guardian_id}:${owner_old_npub}`,
+      group_id,
+      guardian_id,
+      threshold: Number(setupDraft.threshold || 2),
+      guardian_count: Number(setupDraft.guardian_count || 3),
+      owner_old_npub,
+      guardian_npub,
+      group_pubkey: (setupDraft.group_pubkey || "").trim(),
+      participant_ids: [1, 2, 3],
+      created_at: Math.floor(Date.now() / 1000),
+      updated_at: Math.floor(Date.now() / 1000),
+      status: "active",
+    };
+  };
+
+  const applyGuardianSetupToComposer = () => {
+    try {
+      const payload = buildGuardianSetupPayload();
+      setMessage(JSON.stringify(payload, null, 2));
+      setShowSetupBuilder(false);
+    } catch (e) {
+      alert(`Guardian setup template failed: ${e.message}`);
+    }
+  };
+
+  const sendGuardianSetupNow = async () => {
+    try {
+      const payload = buildGuardianSetupPayload();
+      setShowProgress(true);
+      await sendMessage(convo.pubkey, JSON.stringify(payload));
+      setShowProgress(false);
+      setShowSetupBuilder(false);
+    } catch (e) {
+      setShowProgress(false);
+      alert(`Send guardian setup failed: ${e.message}`);
+    }
+  };
 
   const handleConfirmRotationRequest = async (rotationReq, msgId) => {
     try {
@@ -620,7 +685,32 @@ export function ConversationBox({ convo, back, noHeader = false }) {
           </div>
         )}
         {multiDeletion.length === 0 && (
-          <div className="fit-container box-pad-h-m box-pad-v-m fx-scattered">
+          <div className="fit-container box-pad-h-m box-pad-v-m fx-scattered" style={{ flexDirection: "column", alignItems: "stretch", rowGap: ".5rem" }}>
+            <div className="fx-centered fx-start-h" style={{ columnGap: ".5rem" }}>
+              <button className="btn btn-small" type="button" onClick={() => setShowSetupBuilder((s) => !s)}>
+                {showSetupBuilder ? "Hide guardian setup" : "Send guardian setup"}
+              </button>
+            </div>
+            {showSetupBuilder && (
+              <div className="sc-s-18 box-pad-h-s box-pad-v-s" style={{ border: "1px solid var(--dim-gray)" }}>
+                <div className="fit-container fx-centered" style={{ gap: ".5rem", flexWrap: "wrap" }}>
+                  <input className="if" placeholder="guardian_id" value={setupDraft.guardian_id}
+                    onChange={(e) => setSetupDraft((p) => ({ ...p, guardian_id: Number(e.target.value || 1) }))} />
+                  <input className="if" placeholder="threshold" value={setupDraft.threshold}
+                    onChange={(e) => setSetupDraft((p) => ({ ...p, threshold: Number(e.target.value || 2) }))} />
+                  <input className="if" placeholder="guardian_count" value={setupDraft.guardian_count}
+                    onChange={(e) => setSetupDraft((p) => ({ ...p, guardian_count: Number(e.target.value || 3) }))} />
+                </div>
+                <input className="if ifs-full" style={{ marginTop: ".5rem" }} placeholder="group_id" value={setupDraft.group_id}
+                  onChange={(e) => setSetupDraft((p) => ({ ...p, group_id: e.target.value }))} />
+                <input className="if ifs-full" style={{ marginTop: ".5rem" }} placeholder="group_pubkey (optional)" value={setupDraft.group_pubkey}
+                  onChange={(e) => setSetupDraft((p) => ({ ...p, group_pubkey: e.target.value }))} />
+                <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem" }}>
+                  <button className="btn btn-small" type="button" onClick={applyGuardianSetupToComposer}>Fill compose</button>
+                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send now</button>
+                </div>
+              </div>
+            )}
             <form
               className="fit-container fx-scattered fx-end-v"
               onSubmit={(e) => {

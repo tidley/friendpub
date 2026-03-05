@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { nip19 } from "nostr-tools";
 import { useDispatch, useSelector } from "react-redux";
 import { sendMessage } from "@/Helpers/DMHelpers";
@@ -18,20 +18,26 @@ import {
 } from "@/Helpers/GuardianSetupIndex";
 
 const ROTATION_PROOF_KIND = 39093;
+const DEMO_STATE_KEY = "rotation-demo-v2-state";
+
+const emptyGuardians = [
+  { npub: "", secret: "" },
+  { npub: "", secret: "" },
+  { npub: "", secret: "" },
+];
 
 export default function KeyRotationDemoPage() {
   const dispatch = useDispatch();
   const userKeys = useSelector((state) => state.userKeys);
   const userChatrooms = useSelector((state) => state.userChatrooms);
   const userInboxRelays = useSelector((state) => state.userInboxRelays);
+
   const [oldNpub, setOldNpub] = useState("");
   const [newNpub, setNewNpub] = useState("");
   const [nonce, setNonce] = useState("");
   const [reason, setReason] = useState("key compromise");
-  const [guardiansInput, setGuardiansInput] = useState("");
-  const [groupId, setGroupId] = useState("");
-  const [guardianId, setGuardianId] = useState("1");
-  const [sharedSecret, setSharedSecret] = useState("");
+  const [guardiansRows, setGuardiansRows] = useState(emptyGuardians);
+  const [selectedSetupId, setSelectedSetupId] = useState("");
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState("");
   const [partialRows, setPartialRows] = useState([]);
@@ -46,29 +52,55 @@ export default function KeyRotationDemoPage() {
     }
   }, [newNpub, userKeys]);
 
-  const parseGuardians = () =>
-    guardiansInput
-      .split("\n")
-      .map((x) => x.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [id, npub] = line.split(",").map((x) => x.trim());
-        return { id: Number(id), npub };
-      })
-      .filter((g) => Number.isInteger(g.id) && g.npub?.startsWith("npub1"));
-
   const indexedSetups = useMemo(() => {
     ingestGuardianSetupsFromChatrooms(userChatrooms || []);
     return getActiveGuardianSetups();
   }, [userChatrooms]);
 
   const selectedSetup = useMemo(
-    () =>
-      indexedSetups.find(
-        (s) => s.group_id === groupId.trim() && Number(s.guardian_id) === Number(guardianId),
-      ) || null,
-    [indexedSetups, groupId, guardianId],
+    () => indexedSetups.find((s) => s.record_id === selectedSetupId) || indexedSetups[0] || null,
+    [indexedSetups, selectedSetupId],
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = localStorage.getItem(DEMO_STATE_KEY);
+    if (!raw) return;
+    try {
+      const s = JSON.parse(raw);
+      setOldNpub(s.oldNpub || "");
+      setNewNpub(s.newNpub || "");
+      setNonce(s.nonce || "");
+      setReason(s.reason || "key compromise");
+      setGuardiansRows(Array.isArray(s.guardiansRows) && s.guardiansRows.length === 3 ? s.guardiansRows : emptyGuardians);
+      setSelectedSetupId(s.selectedSetupId || "");
+      setPartialRows(Array.isArray(s.partialRows) ? s.partialRows : []);
+      setProofPayload(s.proofPayload || null);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(
+      DEMO_STATE_KEY,
+      JSON.stringify({
+        oldNpub,
+        newNpub,
+        nonce,
+        reason,
+        guardiansRows,
+        selectedSetupId,
+        partialRows,
+        proofPayload,
+      }),
+    );
+  }, [oldNpub, newNpub, nonce, reason, guardiansRows, selectedSetupId, partialRows, proofPayload]);
+
+  const updateGuardianCell = (idx, key, value) => {
+    setGuardiansRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
+  };
 
   const collectPartials = () => {
     const reqNonce = nonce.trim();
@@ -78,7 +110,7 @@ export default function KeyRotationDemoPage() {
       for (const msg of room.convo || []) {
         const raw = msg.raw_content || msg.content;
         const v2 = parseRotationAttestationV2(raw);
-        if (v2 && v2.new_npub === reqNew && v2.nonce === reqNonce) {
+        if (v2 && (!reqNew || v2.new_npub === reqNew) && (!reqNonce || v2.nonce === reqNonce)) {
           rows.push({
             from: room.pubkey,
             created_at: msg.created_at || 0,
@@ -91,7 +123,7 @@ export default function KeyRotationDemoPage() {
         }
         const p = parseRotationPartial(raw);
         if (!p) continue;
-        if (p.new_npub === reqNew && p.nonce === reqNonce) {
+        if ((!reqNew || p.new_npub === reqNew) && (!reqNonce || p.nonce === reqNonce)) {
           rows.push({
             from: room.pubkey,
             created_at: msg.created_at || 0,
@@ -112,15 +144,17 @@ export default function KeyRotationDemoPage() {
       const reqNonce = nonce.trim();
       if (!reqNonce || !resolvedNewNpub) throw new Error("new npub/nonce required");
 
-      let derivedGroupId = groupId.trim();
-      if (!derivedGroupId) {
-        derivedGroupId = partialRows.find((r) => r.group_id)?.group_id || "";
-      }
-      const setupForGroup = indexedSetups.find((s) => s.group_id === derivedGroupId);
-      if (!setupForGroup?.group_pubkey) throw new Error("group setup/group pubkey not found in indexed DM history");
+      const derivedGroupId = selectedSetup?.group_id || partialRows.find((r) => r.group_id)?.group_id || "";
+      const setupForGroup =
+        indexedSetups.find((s) => s.group_id === derivedGroupId) || selectedSetup;
+      if (!setupForGroup?.group_pubkey)
+        throw new Error("group setup/group pubkey not found in indexed DM history");
 
       const req = {
-        old_npub: oldNpub.trim() || setupForGroup.owner_old_npub || partialRows.find((r) => r.old_npub)?.old_npub,
+        old_npub:
+          oldNpub.trim() ||
+          setupForGroup.owner_old_npub ||
+          partialRows.find((r) => r.old_npub)?.old_npub,
         new_npub: resolvedNewNpub,
         nonce: reqNonce,
       };
@@ -186,33 +220,36 @@ export default function KeyRotationDemoPage() {
     try {
       setSending(true);
       setSendResult("");
-      const guardians = parseGuardians();
       const reqNonce = nonce.trim() || crypto.randomUUID();
       if (!resolvedNewNpub) throw new Error("new npub required");
-      if (!groupId.trim()) throw new Error("group id required");
-      if (!sharedSecret.trim()) throw new Error("shared secret required");
-      if (guardians.length === 0) throw new Error("add guardian lines: id,npub");
+
+      const setup = selectedSetup;
+      if (!setup?.group_id) throw new Error("Select a guardian setup record");
 
       let okCount = 0;
-      for (const g of guardians) {
-        const decoded = nip19.decode(g.npub);
+      for (let i = 0; i < guardiansRows.length; i++) {
+        const row = guardiansRows[i];
+        if (!row.npub?.trim()) continue;
+        if (!row.secret?.trim()) throw new Error(`guardian #${i + 1} secret required`);
+        const decoded = nip19.decode(row.npub.trim());
         if (decoded.type !== "npub") continue;
         const reqId = crypto.randomUUID();
+        const guardian_id = i + 1;
         const payload = {
           type: "rotation-request",
           version: 2,
           req_id: reqId,
-          group_id: groupId.trim(),
-          guardian_id: g.id,
+          group_id: setup.group_id,
+          guardian_id,
           claimed_name: "",
-          old_npub_hint: oldNpub.trim(),
+          old_npub_hint: oldNpub.trim() || setup.owner_old_npub || "",
           new_npub: resolvedNewNpub,
           secret_proof: deriveGuardianSecretProof({
-            sharedSecret: sharedSecret.trim(),
+            sharedSecret: row.secret.trim(),
             req_id: reqId,
             nonce: reqNonce,
-            group_id: groupId.trim(),
-            guardian_id: g.id,
+            group_id: setup.group_id,
+            guardian_id,
           }),
           nonce: reqNonce,
           reason: reason.trim(),
@@ -224,7 +261,7 @@ export default function KeyRotationDemoPage() {
       }
 
       setNonce(reqNonce);
-      setSendResult(`sent ${okCount}/${guardians.length} rotation-request v2 DMs`);
+      setSendResult(`sent ${okCount}/3 rotation-request v2 DMs`);
     } catch (e) {
       setSendResult(`send failed: ${e.message}`);
     } finally {
@@ -236,7 +273,7 @@ export default function KeyRotationDemoPage() {
     <div style={{ maxWidth: 920, margin: "24px auto", padding: "0 12px", color: "#e7ebff" }}>
       <h1 style={{ marginBottom: 8 }}>Key rotation demo (NIP-17 guardians)</h1>
       <p style={{ opacity: 0.8, marginTop: 0 }}>
-        v2 request flow uses group_id + secret_proof and indexed guardian setup records from DM history.
+        Use DM-indexed guardian setup records; no manual group_id entry required in recovery requests.
       </p>
 
       <section style={box}>
@@ -246,15 +283,58 @@ export default function KeyRotationDemoPage() {
           <input style={input} value={newNpub} onChange={(e) => setNewNpub(e.target.value)} placeholder="New npub (blank = logged in account)" />
           <input style={input} value={nonce} onChange={(e) => setNonce(e.target.value)} placeholder="Nonce (blank = auto-generate)" />
           <input style={input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" />
-          <input style={input} value={groupId} onChange={(e) => setGroupId(e.target.value)} placeholder="Group ID" />
-          <input style={input} value={sharedSecret} onChange={(e) => setSharedSecret(e.target.value)} placeholder="Shared secret (guardian-specific)" />
         </div>
-        <textarea
-          style={{ ...input, marginTop: 8, minHeight: 80, width: "100%" }}
-          value={guardiansInput}
-          onChange={(e) => setGuardiansInput(e.target.value)}
-          placeholder={"Guardians (one per line):\n1,npub1...\n2,npub1...\n3,npub1..."}
-        />
+
+        <div style={{ marginTop: 8 }}>
+          <label className="p-medium">Setup record</label>
+          <select
+            style={{ ...input, width: "100%", marginTop: 4 }}
+            value={selectedSetup?.record_id || ""}
+            onChange={(e) => setSelectedSetupId(e.target.value)}
+          >
+            {indexedSetups.length === 0 && <option value="">No setup records found in DMs</option>}
+            {indexedSetups.map((s) => (
+              <option key={s.record_id} value={s.record_id}>
+                {s.group_id} • guardian #{s.guardian_id} • {s.owner_old_npub?.slice(0, 16)}...
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <p className="p-medium" style={{ marginBottom: 6 }}>Guardians (npub + secret)</p>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={th}>Guardian npub</th>
+                <th style={th}>Guardian secret</th>
+              </tr>
+            </thead>
+            <tbody>
+              {guardiansRows.map((row, i) => (
+                <tr key={i}>
+                  <td style={td}>
+                    <input
+                      style={{ ...input, width: "100%" }}
+                      value={row.npub}
+                      onChange={(e) => updateGuardianCell(i, "npub", e.target.value)}
+                      placeholder={`Guardian ${i + 1} npub`}
+                    />
+                  </td>
+                  <td style={td}>
+                    <input
+                      style={{ ...input, width: "100%" }}
+                      value={row.secret}
+                      onChange={(e) => updateGuardianCell(i, "secret", e.target.value)}
+                      placeholder={`Guardian ${i + 1} secret`}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
         <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={sendRotationRequest} disabled={sending} style={btn}>
             {sending ? "Sending..." : "Send rotation request via DM"}
@@ -270,11 +350,6 @@ export default function KeyRotationDemoPage() {
         <h3 style={h3}>Indexed guardian setups (from DM history)</h3>
         <p className="p-medium">Found: {indexedSetups.length}</p>
         <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(indexedSetups, null, 2)}</pre>
-      </section>
-
-      <section style={box}>
-        <h3 style={h3}>Selected setup for aggregation</h3>
-        <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(selectedSetup, null, 2)}</pre>
       </section>
 
       <section style={box}>
@@ -295,3 +370,5 @@ const h3 = { margin: "0 0 8px 0" };
 const grid = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 };
 const input = { border: "1px solid #3a4c7b", borderRadius: 8, background: "#0c1630", color: "#e7ebff", padding: 8 };
 const btn = { border: "1px solid #3a66cb", borderRadius: 8, background: "#19336f", color: "#fff", padding: "8px 12px", cursor: "pointer" };
+const th = { textAlign: "left", borderBottom: "1px solid #30487f", padding: "6px" };
+const td = { padding: "6px", verticalAlign: "top" };
