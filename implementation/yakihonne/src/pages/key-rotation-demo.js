@@ -38,6 +38,7 @@ export default function KeyRotationDemoPage() {
   const [reason, setReason] = useState("key compromise");
   const [guardiansRows, setGuardiansRows] = useState(emptyGuardians);
   const [selectedSetupId, setSelectedSetupId] = useState("");
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState("");
   const [partialRows, setPartialRows] = useState([]);
@@ -74,6 +75,7 @@ export default function KeyRotationDemoPage() {
       setReason(s.reason || "key compromise");
       setGuardiansRows(Array.isArray(s.guardiansRows) && s.guardiansRows.length === 3 ? s.guardiansRows : emptyGuardians);
       setSelectedSetupId(s.selectedSetupId || "");
+      setRecoveryMode(!!s.recoveryMode);
       setPartialRows(Array.isArray(s.partialRows) ? s.partialRows : []);
       setProofPayload(s.proofPayload || null);
     } catch {
@@ -92,11 +94,12 @@ export default function KeyRotationDemoPage() {
         reason,
         guardiansRows,
         selectedSetupId,
+        recoveryMode,
         partialRows,
         proofPayload,
       }),
     );
-  }, [oldNpub, newNpub, nonce, reason, guardiansRows, selectedSetupId, partialRows, proofPayload]);
+  }, [oldNpub, newNpub, nonce, reason, guardiansRows, selectedSetupId, recoveryMode, partialRows, proofPayload]);
 
   const updateGuardianCell = (idx, key, value) => {
     setGuardiansRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
@@ -224,7 +227,10 @@ export default function KeyRotationDemoPage() {
       if (!resolvedNewNpub) throw new Error("new npub required");
 
       const setup = selectedSetup;
-      if (!setup?.group_id) throw new Error("Select a guardian setup record");
+      if (!recoveryMode && !setup?.group_id)
+        throw new Error("Select a guardian setup record or enable recovery mode");
+      if (recoveryMode && !oldNpub.trim())
+        throw new Error("old npub required in recovery mode");
 
       let okCount = 0;
       for (let i = 0; i < guardiansRows.length; i++) {
@@ -235,20 +241,24 @@ export default function KeyRotationDemoPage() {
         if (decoded.type !== "npub") continue;
         const reqId = crypto.randomUUID();
         const guardian_id = i + 1;
+        const oldNpubForReq = oldNpub.trim() || setup?.owner_old_npub || "";
+        const groupIdForReq = recoveryMode ? "" : setup?.group_id || "";
         const payload = {
           type: "rotation-request",
           version: 2,
           req_id: reqId,
-          group_id: setup.group_id,
+          group_id: groupIdForReq || null,
           guardian_id,
           claimed_name: "",
-          old_npub_hint: oldNpub.trim() || setup.owner_old_npub || "",
+          old_npub: oldNpubForReq,
+          old_npub_hint: oldNpubForReq,
           new_npub: resolvedNewNpub,
           secret_proof: deriveGuardianSecretProof({
             sharedSecret: row.secret.trim(),
             req_id: reqId,
             nonce: reqNonce,
-            group_id: setup.group_id,
+            group_id: groupIdForReq,
+            old_npub: oldNpubForReq,
             guardian_id,
           }),
           nonce: reqNonce,
@@ -273,22 +283,32 @@ export default function KeyRotationDemoPage() {
     <div style={{ maxWidth: 920, margin: "24px auto", padding: "0 12px", color: "#e7ebff" }}>
       <h1 style={{ marginBottom: 8 }}>Key rotation demo (NIP-17 guardians)</h1>
       <p style={{ opacity: 0.8, marginTop: 0 }}>
-        Use DM-indexed guardian setup records; no manual group_id entry required in recovery requests.
+        Use setup-record mode when available, or recovery mode from a new npub without local setup records.
       </p>
 
       <section style={box}>
         <h3 style={h3}>Requester mode (send rotation request v2)</h3>
         <div style={grid}>
-          <input style={input} value={oldNpub} onChange={(e) => setOldNpub(e.target.value)} placeholder="Old npub (optional hint)" />
+          <input style={input} value={oldNpub} onChange={(e) => setOldNpub(e.target.value)} placeholder={recoveryMode ? "Old npub (required)" : "Old npub (optional hint)"} />
           <input style={input} value={newNpub} onChange={(e) => setNewNpub(e.target.value)} placeholder="New npub (blank = logged in account)" />
           <input style={input} value={nonce} onChange={(e) => setNonce(e.target.value)} placeholder="Nonce (blank = auto-generate)" />
           <input style={input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" />
         </div>
 
-        <div style={{ marginTop: 8 }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={recoveryMode}
+            onChange={(e) => setRecoveryMode(e.target.checked)}
+          />
+          Recovery mode (no setup record on this account)
+        </label>
+
+        <div style={{ marginTop: 8, opacity: recoveryMode ? 0.6 : 1 }}>
           <label className="p-medium">Setup record</label>
           <select
             style={{ ...input, width: "100%", marginTop: 4 }}
+            disabled={recoveryMode}
             value={selectedSetup?.record_id || ""}
             onChange={(e) => setSelectedSetupId(e.target.value)}
           >

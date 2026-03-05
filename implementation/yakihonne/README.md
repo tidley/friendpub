@@ -143,10 +143,14 @@ Expected result: the guardian client has enough information stored (via DM histo
 
 ### B) Recovery request (new npub → guardians)
 1. Log into Yakihonne as **Requester (new npub)**.
-2. For each guardian, open the DM thread and send a JSON message payload (NIP-17 DM) of:
+2. In `/key-rotation-demo`, you have two paths:
+   - **Setup-record mode** (old account / setup available): select an indexed setup record and send v2 requests.
+   - **Recovery mode** (new account / no setup record): enable `Recovery mode (no setup record on this account)` and provide full `old_npub` plus guardian rows (`npub + secret`).
+3. For each guardian, send a v2 request containing:
    - `type: "rotation-request"`, `version: 2`
-   - includes: `group_id`, `guardian_id`, `new_npub`, `nonce`, `expires_at`, and `secret_proof`
-   - secrets are **unique per guardian** (each guardian validates only their own secret)
+   - `guardian_id`, `old_npub`, `new_npub`, `nonce`, `expires_at`, and `secret_proof`
+   - `group_id` may be omitted/null in recovery mode.
+4. `secret_proof` uses guardian-specific secrets and is validated by guardians against candidate setup records.
 
 ### C) Guardian confirmation (guardians → requester)
 1. Each guardian opens the DM thread with the requester.
@@ -162,7 +166,8 @@ Expected result: guardian sends back a `rotation-attestation` v2 DM to the reque
 
 Troubleshooting:
 - If a guardian doesn’t see the confirm UI, ensure they received (and can decrypt) the `guardian-setup` DM and have opened the DM thread at least once in the web client.
-- If matching fails, verify `group_id` + `guardian_id` are consistent across setup + request.
+- If matching fails in setup-record mode, verify `group_id` + `guardian_id` are consistent across setup + request.
+- If matching fails in recovery mode, verify `old_npub`, `guardian_id`, and guardian secret are correct.
 
 ## Notes
 - Rotation proof publish kind was moved to avoid collisions: `ROTATION_PROOF_KIND = 39093`.

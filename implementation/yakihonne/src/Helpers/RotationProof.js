@@ -104,10 +104,13 @@ export const deriveGuardianSecretProof = ({
   req_id,
   nonce,
   group_id,
+  old_npub,
   guardian_id,
 }) => {
-  if (!sharedSecret || !req_id || !nonce || !group_id || !guardian_id) return "";
-  return sha256Hex(`${sharedSecret}|${req_id}|${nonce}|${group_id}|${guardian_id}`);
+  if (!sharedSecret || !req_id || !nonce || !guardian_id) return "";
+  const scope = group_id || old_npub || "";
+  if (!scope) return "";
+  return sha256Hex(`${sharedSecret}|${req_id}|${nonce}|${scope}|${guardian_id}`);
 };
 
 export const buildRotationAttestationV2 = ({ req, setup, share }) => {
@@ -198,7 +201,7 @@ export const parseGuardianSetupUpdateV1 = (raw) => {
 export const parseRotationRequestV2 = (raw) => {
   const j = parseJSONCandidate(raw);
   if (!j || j.type !== "rotation-request" || Number(j.version) !== 2) return null;
-  if (!j.req_id || !j.group_id || !Number.isInteger(Number(j.guardian_id)) || !j.new_npub || !j.secret_proof || !j.nonce) return null;
+  if (!j.req_id || !Number.isInteger(Number(j.guardian_id)) || !j.new_npub || !j.secret_proof || !j.nonce) return null;
   const now = Math.floor(Date.now() / 1000);
   const expires = Number(j.expires_at || 0);
   if (expires && expires < now - 300) return null;
@@ -208,6 +211,7 @@ export const parseRotationRequestV2 = (raw) => {
     type: "rotation-request",
     req_id: (j.req_id || "").trim(),
     group_id: (j.group_id || "").trim(),
+    old_npub: (j.old_npub || j.old_npub_hint || "").trim(),
     guardian_id: Number(j.guardian_id),
     new_npub: (j.new_npub || "").trim(),
     secret_proof: (j.secret_proof || "").trim(),

@@ -178,21 +178,25 @@ export function ConversationBox({ convo, back, noHeader = false }) {
         const candidates = findGuardianSetupsForRequestV2(rotationReq);
         if (candidates.length === 0)
           throw new Error("No guardian setup found for this request");
-        const chosen =
-          candidates.find(
-            (_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`,
-          ) || candidates[0];
         const typedSecret = (secretInputs[msgId] || "").trim();
         if (!typedSecret) throw new Error("Enter shared secret");
-        const proof = deriveGuardianSecretProof({
-          sharedSecret: typedSecret,
-          req_id: rotationReq.req_id,
-          nonce: rotationReq.nonce,
-          group_id: rotationReq.group_id,
-          guardian_id: rotationReq.guardian_id,
+        const validCandidates = candidates.filter((c) => {
+          const proof = deriveGuardianSecretProof({
+            sharedSecret: typedSecret,
+            req_id: rotationReq.req_id,
+            nonce: rotationReq.nonce,
+            group_id: rotationReq.group_id || c.group_id,
+            old_npub: rotationReq.old_npub || c.owner_old_npub,
+            guardian_id: rotationReq.guardian_id,
+          });
+          return proof === rotationReq.secret_proof;
         });
-        if (proof !== rotationReq.secret_proof)
+        if (validCandidates.length === 0)
           throw new Error("Shared secret does not match");
+        const chosen =
+          validCandidates.find(
+            (_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`,
+          ) || validCandidates[0];
         const payload = buildRotationAttestationV2({
           req: rotationReq,
           setup: chosen,
