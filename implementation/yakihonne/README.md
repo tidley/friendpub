@@ -116,6 +116,54 @@ On the guardian side, open the DM thread with the requester. The client should:
 ### 4) Aggregate proof (requester)
 Back on `/key-rotation-demo`, collect attestations until threshold (2-of-3) is met and aggregate the rotation proof.
 
+## Network DM flow (manual, step-by-step)
+
+This is the **Yakihonne UI-centric** way to run the demo, using real NIP-17 DMs inside the app.
+
+### Actors (recommend 5 browser profiles)
+- **Requester (old npub)** — the account that originally set up guardians
+- **Guardian #1**
+- **Guardian #2**
+- **Guardian #3**
+- **Requester (new npub)** — the account you’re rotating/recovering to
+
+Tip: use separate browser profiles or incognito windows so session storage doesn’t overlap.
+
+### A) Initial guardian enrollment (old npub → guardians)
+1. Log into Yakihonne as **Requester (old npub)**.
+2. Open **Messages / DMs** and start (or open) a DM thread with each guardian.
+3. For each guardian, send a single JSON message payload (NIP-17 DM) of:
+   - `type: "guardian-setup"`, `version: 1`
+   - same `group_id` + `group_pubkey` for all three guardians
+   - unique `guardian_id` (1, 2, 3)
+   - `threshold: 2`, `guardian_count: 3`
+4. On each guardian account, open Yakihonne and open the DM thread so the web client can **ingest the setup DM from DM history**.
+
+Expected result: the guardian client has enough information stored (via DM history ingestion + cache) to later match recovery requests without the requester having to paste the group pubkey.
+
+### B) Recovery request (new npub → guardians)
+1. Log into Yakihonne as **Requester (new npub)**.
+2. For each guardian, open the DM thread and send a JSON message payload (NIP-17 DM) of:
+   - `type: "rotation-request"`, `version: 2`
+   - includes: `group_id`, `guardian_id`, `new_npub`, `nonce`, `expires_at`, and `secret_proof`
+   - secrets are **unique per guardian** (each guardian validates only their own secret)
+
+### C) Guardian confirmation (guardians → requester)
+1. Each guardian opens the DM thread with the requester.
+2. In the conversation, the app should detect a **v2 rotation request** and render a confirm UI.
+3. Guardian selects the matched setup record (auto-match if unique; dropdown if multiple).
+4. Guardian enters their shared secret and clicks **Confirm**.
+
+Expected result: guardian sends back a `rotation-attestation` v2 DM to the requester.
+
+### D) Threshold + aggregation (requester)
+1. On the requester side, open `/key-rotation-demo`.
+2. Once **2 of 3** guardian attestations are received, aggregate/verify the rotation proof.
+
+Troubleshooting:
+- If a guardian doesn’t see the confirm UI, ensure they received (and can decrypt) the `guardian-setup` DM and have opened the DM thread at least once in the web client.
+- If matching fails, verify `group_id` + `guardian_id` are consistent across setup + request.
+
 ## Notes
 - Rotation proof publish kind was moved to avoid collisions: `ROTATION_PROOF_KIND = 39093`.
 - Lint may currently fail due to upstream Next lint config issues; `pnpm build` should still work.
