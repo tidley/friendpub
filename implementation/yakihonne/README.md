@@ -132,7 +132,10 @@ Tip: use separate browser profiles or incognito windows so session storage doesn
 ### A) Initial guardian enrollment (old npub → guardians)
 1. Log into Yakihonne as **Requester (old npub)**.
 2. Open **Messages / DMs** and start (or open) a DM thread with each guardian.
-3. For each guardian, send a single JSON message payload (NIP-17 DM) of:
+3. In DM compose, use **Send guardian setup → Generate group** once.
+   - This creates a `group_id` + `group_pubkey` pair and stores it locally for reuse.
+   - Use copy buttons to share/reuse the same values across guardian threads.
+4. For each guardian, send a single JSON message payload (NIP-17 DM) of:
    - `type: "guardian-setup"`, `version: 1`
    - same `group_id` + `group_pubkey` for all three guardians
    - unique `guardian_id` (1, 2, 3)
