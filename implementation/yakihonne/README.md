@@ -70,3 +70,53 @@ You can start editing the page by modifying `pages/index.js`. The page auto-upda
 The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) instead of React pages.
 
 This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+---
+
+# Guardian-based npub recovery / key-rotation demo
+
+This fork includes an experimental demo page + DM UX for guardian-based recovery.
+
+## Where the demo lives
+- Requester / aggregation UI: `src/pages/key-rotation-demo.js`
+- Guardian DM confirm UI: `src/Components/ConversationBox.js`
+- Parsing + verification helpers: `src/Helpers/RotationProof.js`
+- DM-history setup indexing: `src/Helpers/GuardianSetupIndex.js`
+
+## Manual walkthrough (2-of-3 guardians, unique secret per guardian)
+
+### 0) Run the app
+```bash
+corepack pnpm install
+corepack pnpm dev
+```
+Then open: <http://localhost:3400/key-rotation-demo>
+
+### 1) Guardian setup (while you still control the *old* npub)
+For each guardian, send them a NIP-17 DM containing a JSON payload:
+- `type: "guardian-setup"`, `version: 1`
+- includes `group_id`, `guardian_id` (1..3), `threshold: 2`, and `group_pubkey`.
+
+Important: guardians must have the setup DM in their DM history. The web client will ingest old setup DMs on startup / when opening the DM.
+
+### 2) Recovery request (from your *new* npub)
+Send each guardian a NIP-17 DM containing:
+- `type: "rotation-request"`, `version: 2`
+- includes `group_id`, `guardian_id`, `new_npub`, `nonce`, `expires_at`, and `secret_proof`.
+
+Each guardian uses their unique shared secret to validate the request and confirm.
+
+### 3) Guardian confirm
+On the guardian side, open the DM thread with the requester. The client should:
+- detect the v2 rotation request
+- auto-match the stored setup record by `group_id + guardian_id`
+- prompt for the shared secret
+- send back a `rotation-attestation` v2 on confirm
+
+### 4) Aggregate proof (requester)
+Back on `/key-rotation-demo`, collect attestations until threshold (2-of-3) is met and aggregate the rotation proof.
+
+## Notes
+- Rotation proof publish kind was moved to avoid collisions: `ROTATION_PROOF_KIND = 39093`.
+- Lint may currently fail due to upstream Next lint config issues; `pnpm build` should still work.
+
