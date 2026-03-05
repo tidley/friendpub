@@ -138,7 +138,7 @@ Tip: use separate browser profiles or incognito windows so session storage doesn
 4. For each guardian, send a single JSON message payload (NIP-17 DM) of:
    - `type: "guardian-setup"`, `version: 1`
    - same `group_id` + `group_pubkey` for all three guardians
-   - unique `guardian_id` (1, 2, 3)
+   - unique `guardian_id` (1, 2, 3) is auto-assigned by the DM setup builder based on guardian thread order
    - `threshold: 2`, `guardian_count: 3`
 4. On each guardian account, open Yakihonne and open the DM thread so the web client can **ingest the setup DM from DM history**.
 

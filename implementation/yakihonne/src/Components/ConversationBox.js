@@ -1,5 +1,4 @@
 import React, { useEffect, useState, useRef } from "react";
-import * as secp from "@noble/secp256k1";
 import { nip19 } from "nostr-tools";
 import UserProfilePic from "@/Components/UserProfilePic";
 import Date_ from "@/Components/Date_";
@@ -22,6 +21,7 @@ import {
   parseRotationRequest,
   parseRotationRequestV2,
 } from "@/Helpers/RotationProof";
+import { getRandomPrivateKeyBytes, deriveCompressedPubkeyHex } from "@/Helpers/GuardianGroup";
 import {
   findGuardianSetupsForRequestV2,
   getActiveGuardianSetups,
@@ -52,13 +52,13 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [expandedMessages, setExpandedMessages] = useState({});
   const [showSetupBuilder, setShowSetupBuilder] = useState(false);
   const [setupDraft, setSetupDraft] = useState({
-    guardian_id: 1,
     threshold: 2,
     guardian_count: 3,
     group_id: "",
     group_pubkey: "",
   });
   const GROUP_PAIR_KEY = "guardian-setup-group-pair-v1";
+  const GROUP_GUARDIAN_MAP_KEY = "guardian-setup-guardian-map-v1";
   const peerName =
     convo?.display_name?.substring(0, 10) ||
     convo?.name?.substring(0, 10) ||
@@ -167,27 +167,32 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     }
   }, []);
 
+  const asTrimmedString = (v) => (typeof v === "string" ? v.trim() : `${v ?? ""}`.trim());
+
   const persistGroupPair = (group_id, group_pubkey) => {
     if (typeof window === "undefined") return;
-    if (!group_id || !group_pubkey) return;
-    localStorage.setItem(GROUP_PAIR_KEY, JSON.stringify({ group_id, group_pubkey }));
+    const gid = asTrimmedString(group_id);
+    const gpk = asTrimmedString(group_pubkey);
+    if (!gid || !gpk) return;
+    localStorage.setItem(GROUP_PAIR_KEY, JSON.stringify({ group_id: gid, group_pubkey: gpk }));
   };
 
-  const getRandomPrivateKeyBytes = () => {
-    if (secp?.utils?.randomPrivateKey) return secp.utils.randomPrivateKey();
-    if (secp?.etc?.randomBytes) return secp.etc.randomBytes(32);
-    const arr = new Uint8Array(32);
-    if (typeof crypto !== "undefined" && crypto?.getRandomValues) {
-      crypto.getRandomValues(arr);
-      return arr;
+  const resolveGuardianIdForCurrentConvo = (group_id) => {
+    if (typeof window === "undefined") return 1;
+    const gid = asTrimmedString(group_id);
+    const guardianPub = asTrimmedString(convo?.pubkey);
+    if (!gid || !guardianPub) return 1;
+    const raw = localStorage.getItem(GROUP_GUARDIAN_MAP_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    const current = Array.isArray(map[gid]) ? map[gid] : [];
+    let idx = current.indexOf(guardianPub);
+    if (idx === -1) {
+      current.push(guardianPub);
+      map[gid] = current;
+      localStorage.setItem(GROUP_GUARDIAN_MAP_KEY, JSON.stringify(map));
+      idx = current.length - 1;
     }
-    throw new Error("No secure random source available");
-  };
-
-  const deriveCompressedPubkeyHex = (privBytes) => {
-    if (secp?.getPublicKey) return secp.getPublicKey(privBytes, true);
-    if (secp?.Point?.fromPrivateKey) return secp.Point.fromPrivateKey(privBytes).toHex(true);
-    throw new Error("No secp256k1 pubkey derivation API available");
+    return idx + 1;
   };
 
   const handleGenerateGroup = () => {
@@ -203,22 +208,31 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   };
 
   const buildGuardianSetupPayload = () => {
-    if (!userKeys?.pub) throw new Error("login required");
-    const owner_old_npub = nip19.npubEncode(userKeys.pub);
-    const guardian_npub = nip19.npubEncode(convo.pubkey);
-    const guardian_id = Number(setupDraft.guardian_id || 1);
-    const group_id = (setupDraft.group_id || "").trim();
+    if (!userKeys?.pub) throw new Error("Login required");
+    if (!convo?.pubkey) throw new Error("Open a guardian DM first");
+
+    const owner_old_npub = asTrimmedString(nip19.npubEncode(userKeys.pub));
+    const guardian_npub = asTrimmedString(nip19.npubEncode(convo.pubkey));
+    const group_id = asTrimmedString(setupDraft.group_id);
+    const group_pubkey = asTrimmedString(setupDraft.group_pubkey);
+    const threshold = Number(setupDraft.threshold || 2);
+    const guardian_count = Number(setupDraft.guardian_count || 3);
+
+    if (!owner_old_npub.startsWith("npub1")) throw new Error("owner_old_npub is invalid");
+    if (!guardian_npub.startsWith("npub1")) throw new Error("guardian_npub is invalid");
     if (!group_id) throw new Error("group_id required");
-    const group_pubkey = (setupDraft.group_pubkey || "").trim();
-    if (!group_pubkey) throw new Error("group_pubkey required (generate group first)");
+    if (!group_pubkey) throw new Error("group_pubkey required (click Generate group)");
+
+    const guardian_id = resolveGuardianIdForCurrentConvo(group_id);
+
     return {
       type: "guardian-setup",
       version: 1,
       record_id: buildGuardianSetupRecordId({ group_id, guardian_id, owner_old_npub }),
       group_id,
       guardian_id,
-      threshold: Number(setupDraft.threshold || 2),
-      guardian_count: Number(setupDraft.guardian_count || 3),
+      threshold,
+      guardian_count,
       owner_old_npub,
       guardian_npub,
       group_pubkey,
@@ -842,8 +856,6 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             {showSetupBuilder && (
               <div className="sc-s-18 box-pad-h-s box-pad-v-s" style={{ border: "1px solid var(--dim-gray)" }}>
                 <div className="fit-container fx-centered" style={{ gap: ".5rem", flexWrap: "wrap" }}>
-                  <input className="if" placeholder="guardian_id" value={setupDraft.guardian_id}
-                    onChange={(e) => setSetupDraft((p) => ({ ...p, guardian_id: Number(e.target.value || 1) }))} />
                   <input className="if" placeholder="threshold" value={setupDraft.threshold}
                     onChange={(e) => setSetupDraft((p) => ({ ...p, threshold: Number(e.target.value || 2) }))} />
                   <input className="if" placeholder="guardian_count" value={setupDraft.guardian_count}
@@ -860,6 +872,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                   onChange={(e) => setSetupDraft((p) => ({ ...p, group_pubkey: e.target.value }))} />
                 <p className="p-medium gray-c" style={{ marginTop: ".25rem" }}>
                   group_pubkey is required. Generate once, then reuse the same group_id/group_pubkey across all guardian setup DMs.
+                </p>
+                <p className="p-medium gray-c" style={{ marginTop: ".25rem" }}>
+                  guardian_id is assigned automatically per group based on guardian DM order (1,2,3).
                 </p>
                 <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem" }}>
                   <button className="btn btn-small" type="button" onClick={applyGuardianSetupToComposer}>Fill compose</button>
