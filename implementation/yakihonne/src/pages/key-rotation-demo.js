@@ -77,8 +77,10 @@ function KeyRotationDemoPage() {
       setGuardiansRows(Array.isArray(s.guardiansRows) && s.guardiansRows.length === 3 ? s.guardiansRows : emptyGuardians);
       setSelectedSetupId(s.selectedSetupId || "");
       setRecoveryMode(!!s.recoveryMode);
-      setPartialRows(Array.isArray(s.partialRows) ? s.partialRows : []);
-      setProofPayload(s.proofPayload || null);
+      // NOTE: do NOT restore large arrays/objects from localStorage (quota risk)
+      // partialRows + proofPayload are intentionally not persisted.
+      setPartialRows([]);
+      setProofPayload(null);
     } catch {
       // ignore
     }
@@ -86,21 +88,25 @@ function KeyRotationDemoPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    localStorage.setItem(
-      DEMO_STATE_KEY,
-      JSON.stringify({
-        oldNpub,
-        newNpub,
-        nonce,
-        reason,
-        guardiansRows,
-        selectedSetupId,
-        recoveryMode,
-        partialRows,
-        proofPayload,
-      }),
-    );
-  }, [oldNpub, newNpub, nonce, reason, guardiansRows, selectedSetupId, recoveryMode, partialRows, proofPayload]);
+    try {
+      localStorage.setItem(
+        DEMO_STATE_KEY,
+        JSON.stringify({
+          oldNpub,
+          newNpub,
+          nonce,
+          reason,
+          guardiansRows,
+          selectedSetupId,
+          recoveryMode,
+        }),
+      );
+    } catch (e) {
+      // Ignore quota errors; this is demo UX persistence only.
+      // eslint-disable-next-line no-console
+      console.warn("[key-rotation-demo] localStorage persist failed", e?.message || e);
+    }
+  }, [oldNpub, newNpub, nonce, reason, guardiansRows, selectedSetupId, recoveryMode]);
 
   const updateGuardianCell = (idx, key, value) => {
     setGuardiansRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
