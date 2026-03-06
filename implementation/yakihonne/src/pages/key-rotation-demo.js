@@ -283,7 +283,8 @@ function KeyRotationDemoPage() {
         throw new Error("old npub required in recovery mode");
 
       let okCount = 0;
-      for (let i = 0; i < guardiansRows.length; i++) {
+      // Demo path: use guardians 1 and 2 as the signing set.
+      for (let i = 0; i < Math.min(2, guardiansRows.length); i++) {
         const row = guardiansRows[i];
         if (!row.npub?.trim()) continue;
         if (!row.secret?.trim()) throw new Error(`guardian #${i + 1} secret required`);

@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
+import * as secp from "@noble/secp256k1";
 import { nip19 } from "nostr-tools";
 import UserProfilePic from "@/Components/UserProfilePic";
 import Date_ from "@/Components/Date_";
@@ -23,7 +24,11 @@ import {
   parseRotationRequest,
   parseRotationRequestV2,
 } from "@/Helpers/RotationProof";
-import { getRandomPrivateKeyBytes, deriveCompressedPubkeyHex, dealerSplitSecret2of3 } from "@/Helpers/GuardianGroup";
+import {
+  getRandomPrivateKeyBytes,
+  deriveCompressedPubkeyHex,
+  dealerSplitSecret2of3,
+} from "@/Helpers/GuardianGroup";
 import {
   findGuardianSetupsForRequestV2,
   getActiveGuardianSetups,
@@ -67,6 +72,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [setupDraftError, setSetupDraftError] = useState("");
   const GROUP_PAIR_KEY = "guardian-setup-group-pair-v1";
   const GROUP_GUARDIAN_MAP_KEY = "guardian-setup-guardian-map-v1";
+  const GROUP_SECRET_KEY = "guardian-setup-group-secret-v1";
   const peerName =
     convo?.display_name?.substring(0, 10) ||
     convo?.name?.substring(0, 10) ||
@@ -294,6 +300,47 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     localStorage.setItem(GROUP_PAIR_KEY, JSON.stringify({ group_id: gid, group_pubkey: gpk }));
   };
 
+  const loadGroupSecretStore = () => {
+    if (typeof window === "undefined") return {};
+    try {
+      const raw = localStorage.getItem(GROUP_SECRET_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const persistGroupSecret = ({ group_id, group_secret_hex, coeff_hex }) => {
+    if (typeof window === "undefined") return;
+    const gid = asTrimmedString(group_id);
+    const gsh = asTrimmedString(group_secret_hex);
+    if (!gid || !gsh) return;
+    const store = loadGroupSecretStore();
+    store[gid] = {
+      group_secret_hex: gsh,
+      coeff_hex: asTrimmedString(coeff_hex),
+      updated_at: Math.floor(Date.now() / 1000),
+    };
+    try {
+      localStorage.setItem(GROUP_SECRET_KEY, JSON.stringify(store));
+    } catch {
+      // ignore (demo-only)
+    }
+  };
+
+  const getGroupSecretFor = (group_id) => {
+    const gid = asTrimmedString(group_id);
+    if (!gid) return null;
+    const store = loadGroupSecretStore();
+    const row = store?.[gid];
+    if (!row?.group_secret_hex) return null;
+    return {
+      group_secret_hex: asTrimmedString(row.group_secret_hex),
+      coeff_hex: asTrimmedString(row.coeff_hex),
+    };
+  };
+
   const resolveGuardianIdForCurrentConvo = (group_id) => {
     if (typeof window === "undefined") return 1;
     const gid = asTrimmedString(group_id);
@@ -315,10 +362,37 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const handleGenerateGroup = () => {
     try {
       const sk = getRandomPrivateKeyBytes();
+      const group_secret_hex = secp.etc.bytesToHex(sk);
       const group_pubkey = deriveCompressedPubkeyHex(sk);
+      const group_id = buildGuardianGroupIdFromPubkey(group_pubkey);
+
       setSetupDraftError("");
       setSetupDraft((prev) => ({ ...prev, group_pubkey }));
       persistGroupPair(group_pubkey);
+
+      // Persist group secret locally so we can generate/send per-guardian shares later.
+      // Demo-only: do not use this pattern for real key recovery.
+      if (group_id) persistGroupSecret({ group_id, group_secret_hex });
+
+      // Auto-provision guardian shares for demo: store shares for guardian_id 1 and 2.
+      // This supports running multiple guardians in the same browser profile.
+      if (group_id) {
+        const dealer = dealerSplitSecret2of3({
+          groupSecretHex: group_secret_hex,
+          participantIds: [1, 2],
+          threshold: 2,
+        });
+        const map = loadGuardianShareMap();
+        for (const s of dealer.shares || []) {
+          map[shareMapKeyFor(group_id, s.id)] = JSON.stringify({
+            id: Number(s.id),
+            share: s.share,
+            threshold: Number(dealer.threshold || 2),
+            groupPubkey: group_pubkey,
+          });
+        }
+        saveGuardianShareMap(map);
+      }
     } catch (e) {
       alert(`Generate group failed: ${e.message}`);
     }
@@ -409,6 +483,79 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     } catch (e) {
       setShowProgress(false);
       alert(`Send guardian setup failed: ${e.message}`);
+    }
+  };
+
+  const buildGuardianSharePayloadV1 = ({ setupPayload }) => {
+    if (!setupPayload?.group_id || !setupPayload?.guardian_id || !setupPayload?.group_pubkey)
+      throw new Error("invalid setup payload");
+
+    const secretRow = getGroupSecretFor(setupPayload.group_id);
+    if (!secretRow?.group_secret_hex) {
+      throw new Error(
+        "Missing local group secret for this group_id. Click 'Generate group' on the requester device that created the group, then re-send share.",
+      );
+    }
+
+    // Dealer split: shares are derived from (group_secret_hex, coeff_hex).
+    // We persist coeff_hex so that future shares are stable if you re-open the page.
+    const split = dealerSplitSecret2of3({
+      groupSecretHex: secretRow.group_secret_hex,
+      participantIds: setupPayload.participant_ids || [1, 2, 3],
+      threshold: Number(setupPayload.threshold || 2),
+      coeffHex: secretRow.coeff_hex || "",
+    });
+
+    // Ensure we persist coeff_hex once generated.
+    if (!secretRow.coeff_hex && split?.coeffHex) {
+      persistGroupSecret({
+        group_id: setupPayload.group_id,
+        group_secret_hex: secretRow.group_secret_hex,
+        coeff_hex: split.coeffHex,
+      });
+    }
+
+    const targetId = Number(setupPayload.guardian_id);
+    const row = (split?.shares || []).find((s) => Number(s.id) === targetId);
+    if (!row?.share) throw new Error(`failed to derive share for guardian_id=${targetId}`);
+
+    return {
+      type: "guardian-share",
+      version: 1,
+      group_id: setupPayload.group_id,
+      guardian_id: targetId,
+      threshold: Number(setupPayload.threshold || 2),
+      group_pubkey: setupPayload.group_pubkey,
+      share: row.share,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+  };
+
+  const sendGuardianShareNow = async () => {
+    try {
+      const setupPayload = buildGuardianSetupPayload();
+      persistGroupPair(setupPayload.group_pubkey);
+
+      const shareMsg = buildGuardianSharePayloadV1({ setupPayload });
+
+      // Also store it locally so this browser can later auto-confirm as that guardian.
+      const map = loadGuardianShareMap();
+      map[shareMapKeyFor(shareMsg.group_id, shareMsg.guardian_id)] = JSON.stringify({
+        id: Number(shareMsg.guardian_id),
+        share: shareMsg.share,
+        threshold: Number(shareMsg.threshold || 2),
+        groupPubkey: shareMsg.group_pubkey,
+      });
+      saveGuardianShareMap(map);
+
+      devJsonAssert(JSON.stringify(shareMsg), "guardian-share-send");
+      setShowProgress(true);
+      await sendMessage(convo.pubkey, JSON.stringify(shareMsg));
+      setShowProgress(false);
+      setShowSetupBuilder(false);
+    } catch (e) {
+      setShowProgress(false);
+      alert(`Send guardian share failed: ${e.message}`);
     }
   };
 
@@ -1147,9 +1294,10 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                     {setupDraftError}
                   </p>
                 ) : null}
-                <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem" }}>
+                <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem", flexWrap: "wrap" }}>
                   <button className="btn btn-small" type="button" onClick={applyGuardianSetupToComposer}>Fill compose</button>
-                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send now</button>
+                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send setup now</button>
+                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianShareNow}>Send share now</button>
                 </div>
               </div>
             )}
