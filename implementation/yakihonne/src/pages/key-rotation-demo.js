@@ -140,7 +140,13 @@ function KeyRotationDemoPage() {
     }
     rows.sort((a, b) => b.created_at - a.created_at);
     setPartialRows(rows);
-    setSendResult(`collected ${rows.length} matching partial message(s)`);
+
+    const uniqueIds = new Set(rows.map((r) => r?.partial?.id).filter((x) => Number.isFinite(Number(x))));
+    const idsList = Array.from(uniqueIds).sort((a, b) => Number(a) - Number(b));
+    setSendResult(
+      `collected ${rows.length} matching partial message(s) from ${uniqueIds.size} unique guardian(s)` +
+        (idsList.length ? ` (ids: ${idsList.join(",")})` : ""),
+    );
   };
 
   const aggregateProof = () => {
@@ -173,7 +179,11 @@ function KeyRotationDemoPage() {
         picked.push(row.partial);
         if (picked.length >= 2) break;
       }
-      if (picked.length < 2) throw new Error("need 2 unique guardian partials");
+      if (picked.length < 2) {
+        const allIds = partialRows.map((r) => r?.partial?.id).filter((x) => Number.isFinite(Number(x)));
+        const uniq = Array.from(new Set(allIds)).sort((a, b) => Number(a) - Number(b));
+        throw new Error(`need 2 unique guardian partials (found ids: ${uniq.join(",") || "none"})`);
+      }
 
       const signature = aggregateRotationProof(req, picked, setupForGroup.group_pubkey);
       const valid_local = verifyRotationProof(req, signature, setupForGroup.group_pubkey);
