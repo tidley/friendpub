@@ -128,7 +128,7 @@ const buildRecoveryRequestPayload = () => {
     sharedSecret: rotationRequest.secret,
     req_id: payload.req_id,
     nonce: payload.nonce,
-    group_id,
+    group_id: groupId,
     old_npub: payload.old_npub,
     guardian_id: payload.guardian_id,
   });

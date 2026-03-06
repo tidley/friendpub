@@ -1,27 +1,22 @@
-[
-  {
-    "id": "dm-001",
-    "timestamp": "2026-03-01T12:00:00Z",
-    "guardian": "npub1guardianA",
-    "type": "guardian-setup",
-    "threshold": 2,
-    "secret": "secret-A-unique",
-    "metadata": {
-      "deviceId": "device-alpha"
-    }
-  },
-  {
-    "id": "dm-002",
-    "timestamp": "2026-03-01T12:01:00Z",
-    "guardian": "npub1guardianB",
-    "type": "guardian-setup",
-    "secret": "secret-B-unique"
-  },
-  {
-    "id": "dm-003",
-    "timestamp": "2026-03-01T12:02:00Z",
-    "guardian": "npub1guardianC",
-    "type": "guardian-setup",
-    "secret": "secret-C-unique"
+{
+  "group_id": "g_aaaaaaaaaaaaaaaaaaaa",
+  "owner_old_npub": "npub1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "group_pubkey": "11ae122ff5814380afbd09fb041cea4105176209963fda8892e9eec6439d3cfe",
+  "guardians": [
+    { "id": 1, "npub": "npub1cccccccccccccccccccccccccccccccccccccccccccccccccccc", "created_at": 1760000000 },
+    { "id": 2, "npub": "npub1dddddddddddddddddddddddddddddddddddddddddddddddddddd", "created_at": 1760000060 },
+    { "id": 3, "npub": "npub1eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "created_at": 1760000120 }
+  ],
+  "updates": [
+    { "guardian_id": 1, "status": "revoked", "updated_at": 1760001000 }
+  ],
+  "rotationRequest": {
+    "req_id": "req-demo-001",
+    "guardian_id": 2,
+    "new_npub": "npub1ffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "nonce": "nonce-demo-001",
+    "reason": "key compromise",
+    "secret": "sec1",
+    "expires_offset": 3600
   }
-]
+}

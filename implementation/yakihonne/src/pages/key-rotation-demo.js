@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { nip19 } from "nostr-tools";
 import { useDispatch, useSelector } from "react-redux";
 import { sendMessage } from "@/Helpers/DMHelpers";
@@ -26,7 +27,7 @@ const emptyGuardians = [
   { npub: "", secret: "" },
 ];
 
-export default function KeyRotationDemoPage() {
+function KeyRotationDemoPage() {
   const dispatch = useDispatch();
   const userKeys = useSelector((state) => state.userKeys);
   const userChatrooms = useSelector((state) => state.userChatrooms);
@@ -398,3 +399,7 @@ const input = { border: "1px solid #3a4c7b", borderRadius: 8, background: "#0c16
 const btn = { border: "1px solid #3a66cb", borderRadius: 8, background: "#19336f", color: "#fff", padding: "8px 12px", cursor: "pointer" };
 const th = { textAlign: "left", borderBottom: "1px solid #30487f", padding: "6px" };
 const td = { padding: "6px", verticalAlign: "top" };
+
+// Disable SSR for this demo page to avoid hydration mismatches from client-side extensions
+// (e.g., Dark Reader mutating inline styles before React hydrates).
+export default dynamic(() => Promise.resolve(KeyRotationDemoPage), { ssr: false });
