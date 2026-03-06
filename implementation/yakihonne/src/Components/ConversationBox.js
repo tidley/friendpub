@@ -295,11 +295,14 @@ export function ConversationBox({ convo, back, noHeader = false }) {
         const sharedSecret = messageSecret || typedSecret;
         if (!sharedSecret) throw new Error("Enter shared secret");
         const validCandidates = candidates.filter((c) => {
+          // IMPORTANT: do not fall back to candidate group_id here.
+          // For rotation-request v2, the requester may omit group_id (null/""),
+          // in which case deriveGuardianSecretProof() must use old_npub as the scope.
           const proof = deriveGuardianSecretProof({
             sharedSecret,
             req_id: rotationReq.req_id,
             nonce: rotationReq.nonce,
-            group_id: rotationReq.group_id || c.group_id,
+            group_id: rotationReq.group_id,
             old_npub: rotationReq.old_npub || rotationReq.old_npub_hint || c.owner_old_npub,
             guardian_id: rotationReq.guardian_id,
           });
