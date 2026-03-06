@@ -110,11 +110,20 @@ function KeyRotationDemoPage() {
     const reqNonce = nonce.trim();
     const reqNew = resolvedNewNpub;
     const rows = [];
+
+    // If a setup is selected, prefer matching that group_id to avoid mixing attestations from different setups.
+    const expectedGroupId = selectedSetup?.group_id || "";
+
     for (const room of userChatrooms || []) {
       for (const msg of room.convo || []) {
         const raw = msg.raw_content || msg.content;
         const v2 = parseRotationAttestationV2(raw);
-        if (v2 && (!reqNew || v2.new_npub === reqNew) && (!reqNonce || v2.nonce === reqNonce)) {
+        if (
+          v2 &&
+          (!reqNew || v2.new_npub === reqNew) &&
+          (!reqNonce || v2.nonce === reqNonce) &&
+          (!expectedGroupId || v2.group_id === expectedGroupId)
+        ) {
           rows.push({
             from: room.pubkey,
             created_at: msg.created_at || 0,
@@ -138,14 +147,19 @@ function KeyRotationDemoPage() {
         }
       }
     }
+
     rows.sort((a, b) => b.created_at - a.created_at);
     setPartialRows(rows);
 
     const uniqueIds = new Set(rows.map((r) => r?.partial?.id).filter((x) => Number.isFinite(Number(x))));
     const idsList = Array.from(uniqueIds).sort((a, b) => Number(a) - Number(b));
+    const uniqueGroupIds = Array.from(new Set(rows.map((r) => r?.group_id).filter(Boolean)));
+
     setSendResult(
       `collected ${rows.length} matching partial message(s) from ${uniqueIds.size} unique guardian(s)` +
-        (idsList.length ? ` (ids: ${idsList.join(",")})` : ""),
+        (idsList.length ? ` (ids: ${idsList.join(",")})` : "") +
+        (uniqueGroupIds.length ? ` (group_ids: ${uniqueGroupIds.join(",")})` : "") +
+        (expectedGroupId ? ` (filtered to group_id=${expectedGroupId})` : ""),
     );
   };
 
@@ -173,6 +187,8 @@ function KeyRotationDemoPage() {
       const seen = new Set();
       const picked = [];
       for (const row of partialRows) {
+        // Avoid mixing partials from a different guardian setup/group.
+        if (row?.group_id && row.group_id !== setupForGroup.group_id) continue;
         const id = row.partial?.id;
         if (seen.has(id)) continue;
         seen.add(id);
