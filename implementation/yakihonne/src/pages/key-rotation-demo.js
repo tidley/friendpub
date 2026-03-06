@@ -159,11 +159,13 @@ function KeyRotationDemoPage() {
 
     const uniqueIds = new Set(rows.map((r) => r?.partial?.id).filter((x) => Number.isFinite(Number(x))));
     const idsList = Array.from(uniqueIds).sort((a, b) => Number(a) - Number(b));
+    const uniqueFrom = Array.from(new Set(rows.map((r) => (r?.from ? String(r.from).trim() : "")).filter(Boolean)));
     const uniqueGroupIds = Array.from(new Set(rows.map((r) => r?.group_id).filter(Boolean)));
 
     setSendResult(
-      `collected ${rows.length} matching partial message(s) from ${uniqueIds.size} unique guardian(s)` +
-        (idsList.length ? ` (ids: ${idsList.join(",")})` : "") +
+      `collected ${rows.length} matching partial message(s) from ${uniqueFrom.length || uniqueIds.size} unique guardian(s)` +
+        (uniqueFrom.length ? ` (from: ${uniqueFrom.map((f) => f.slice(0, 12) + "…").join(",")})` : "") +
+        (!uniqueFrom.length && idsList.length ? ` (ids: ${idsList.join(",")})` : "") +
         (uniqueGroupIds.length ? ` (group_ids: ${uniqueGroupIds.join(",")})` : "") +
         (expectedGroupId ? ` (filtered to group_id=${expectedGroupId})` : ""),
     );
@@ -190,21 +192,36 @@ function KeyRotationDemoPage() {
       };
       if (!req.old_npub) throw new Error("old npub unresolved");
 
-      const seen = new Set();
+      // Deduplicate by *guardian identity*, not partial.id.
+      // Some guardian implementations currently emit partial.id=1 for all guardians.
+      const seenGuardians = new Set();
       const picked = [];
       for (const row of partialRows) {
         // Avoid mixing partials from a different guardian setup/group.
         if (row?.group_id && row.group_id !== setupForGroup.group_id) continue;
-        const id = row.partial?.id;
-        if (seen.has(id)) continue;
-        seen.add(id);
+
+        // Most robust key: sender pubkey ("from"). Fall back to partial.id only if missing.
+        const guardianKey = (row?.from && String(row.from).trim())
+          ? `from:${String(row.from).trim()}`
+          : `id:${String(row?.partial?.id ?? "")}`;
+
+        if (seenGuardians.has(guardianKey)) continue;
+        seenGuardians.add(guardianKey);
         picked.push(row.partial);
         if (picked.length >= 2) break;
       }
       if (picked.length < 2) {
-        const allIds = partialRows.map((r) => r?.partial?.id).filter((x) => Number.isFinite(Number(x)));
-        const uniq = Array.from(new Set(allIds)).sort((a, b) => Number(a) - Number(b));
-        throw new Error(`need 2 unique guardian partials (found ids: ${uniq.join(",") || "none"})`);
+        const uniqFrom = Array.from(
+          new Set(partialRows.map((r) => (r?.from ? String(r.from).trim() : "")).filter(Boolean)),
+        );
+        const uniqIds = Array.from(
+          new Set(partialRows.map((r) => r?.partial?.id).filter((x) => Number.isFinite(Number(x)))),
+        ).sort((a, b) => Number(a) - Number(b));
+
+        throw new Error(
+          `need 2 unique guardian partials (found guardians: ${uniqFrom.join(",") || "none"}` +
+            `${uniqIds.length ? `; partial.ids: ${uniqIds.join(",")}` : ""})`,
+        );
       }
 
       const signature = aggregateRotationProof(req, picked, setupForGroup.group_pubkey);

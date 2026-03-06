@@ -13,6 +13,7 @@ import OptionsDropdown from "./OptionsDropdown";
 import { copyText } from "@/Helpers/Helpers";
 import DeleteWarning from "./DeleteWarning";
 import {
+  buildGuardianGroupIdFromPubkey,
   buildGuardianSetupRecordId,
   buildRotationAttestationV2,
   buildRotationPartial,
@@ -54,9 +55,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [setupDraft, setSetupDraft] = useState({
     threshold: 2,
     guardian_count: 3,
-    group_id: "",
     group_pubkey: "",
   });
+  const [setupDraftError, setSetupDraftError] = useState("");
   const GROUP_PAIR_KEY = "guardian-setup-group-pair-v1";
   const GROUP_GUARDIAN_MAP_KEY = "guardian-setup-guardian-map-v1";
   const peerName =
@@ -155,10 +156,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     if (!raw) return;
     try {
       const pair = JSON.parse(raw);
-      if (pair?.group_id && pair?.group_pubkey) {
+      if (pair?.group_pubkey) {
         setSetupDraft((prev) => ({
           ...prev,
-          group_id: prev.group_id || pair.group_id,
           group_pubkey: prev.group_pubkey || pair.group_pubkey,
         }));
       }
@@ -169,11 +169,12 @@ export function ConversationBox({ convo, back, noHeader = false }) {
 
   const asTrimmedString = (v) => (typeof v === "string" ? v.trim() : `${v ?? ""}`.trim());
 
-  const persistGroupPair = (group_id, group_pubkey) => {
+  const persistGroupPair = (group_pubkey) => {
     if (typeof window === "undefined") return;
-    const gid = asTrimmedString(group_id);
     const gpk = asTrimmedString(group_pubkey);
-    if (!gid || !gpk) return;
+    if (!gpk) return;
+    const gid = buildGuardianGroupIdFromPubkey(gpk);
+    if (!gid) return;
     localStorage.setItem(GROUP_PAIR_KEY, JSON.stringify({ group_id: gid, group_pubkey: gpk }));
   };
 
@@ -199,9 +200,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     try {
       const sk = getRandomPrivateKeyBytes();
       const group_pubkey = deriveCompressedPubkeyHex(sk);
-      const group_id = `g_${group_pubkey.slice(0, 20)}`;
-      setSetupDraft((prev) => ({ ...prev, group_id, group_pubkey }));
-      persistGroupPair(group_id, group_pubkey);
+      setSetupDraftError("");
+      setSetupDraft((prev) => ({ ...prev, group_pubkey }));
+      persistGroupPair(group_pubkey);
     } catch (e) {
       alert(`Generate group failed: ${e.message}`);
     }
@@ -213,15 +214,16 @@ export function ConversationBox({ convo, back, noHeader = false }) {
 
     const owner_old_npub = asTrimmedString(nip19.npubEncode(userKeys.pub));
     const guardian_npub = asTrimmedString(nip19.npubEncode(convo.pubkey));
-    const group_id = asTrimmedString(setupDraft.group_id);
     const group_pubkey = asTrimmedString(setupDraft.group_pubkey);
     const threshold = Number(setupDraft.threshold || 2);
     const guardian_count = Number(setupDraft.guardian_count || 3);
 
     if (!owner_old_npub.startsWith("npub1")) throw new Error("owner_old_npub is invalid");
     if (!guardian_npub.startsWith("npub1")) throw new Error("guardian_npub is invalid");
-    if (!group_id) throw new Error("group_id required");
     if (!group_pubkey) throw new Error("group_pubkey required (click Generate group)");
+
+    const group_id = buildGuardianGroupIdFromPubkey(group_pubkey);
+    if (!group_id) throw new Error("failed to derive group_id");
 
     const guardian_id = resolveGuardianIdForCurrentConvo(group_id);
 
@@ -246,7 +248,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const applyGuardianSetupToComposer = () => {
     try {
       const payload = buildGuardianSetupPayload();
-      persistGroupPair(payload.group_id, payload.group_pubkey);
+      persistGroupPair(payload.group_pubkey);
       setMessage(JSON.stringify(payload, null, 2));
       setShowSetupBuilder(false);
     } catch (e) {
@@ -257,7 +259,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const sendGuardianSetupNow = async () => {
     try {
       const payload = buildGuardianSetupPayload();
-      persistGroupPair(payload.group_id, payload.group_pubkey);
+      persistGroupPair(payload.group_pubkey);
       const payloadText = JSON.stringify(payload);
       devJsonAssert(payloadText, "guardian-setup-send");
       setShowProgress(true);
@@ -882,23 +884,99 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             {showSetupBuilder && (
               <div className="sc-s-18 box-pad-h-s box-pad-v-s" style={{ border: "1px solid var(--dim-gray)" }}>
                 <p className="p-medium gray-c" style={{ margin: 0 }}>
-                  Guardian setup uses a fixed threshold of <strong>2-of-3</strong>.
+                  Configure the guardian threshold (m-of-n):
                 </p>
-                <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem", flexWrap: "wrap" }}>
+
+                <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem", flexWrap: "wrap", alignItems: "center" }}>
+                  <button
+                    className="btn btn-small"
+                    type="button"
+                    onClick={() => {
+                      setSetupDraftError("");
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number(p.guardian_count || 3) - 1);
+                        const m = Math.min(Math.max(1, Number(p.threshold || 2)), n);
+                        return { ...p, guardian_count: n, threshold: m };
+                      });
+                    }}
+                  >
+                    -
+                  </button>
+                  <input
+                    className="if"
+                    style={{ width: "4.5rem", textAlign: "center" }}
+                    inputMode="numeric"
+                    value={setupDraft.threshold}
+                    onChange={(e) => {
+                      setSetupDraftError("");
+                      const raw = Number(e.target.value);
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number(p.guardian_count || 3));
+                        const m = Math.min(Math.max(1, Number.isFinite(raw) ? raw : 1), n);
+                        return { ...p, threshold: m, guardian_count: n };
+                      });
+                    }}
+                  />
+                  <span className="gray-c">of</span>
+                  <input
+                    className="if"
+                    style={{ width: "4.5rem", textAlign: "center" }}
+                    inputMode="numeric"
+                    value={setupDraft.guardian_count}
+                    onChange={(e) => {
+                      setSetupDraftError("");
+                      const raw = Number(e.target.value);
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number.isFinite(raw) ? raw : 1);
+                        const m = Math.min(Math.max(1, Number(p.threshold || 1)), n);
+                        return { ...p, guardian_count: n, threshold: m };
+                      });
+                    }}
+                  />
+                  <button
+                    className="btn btn-small"
+                    type="button"
+                    onClick={() => {
+                      setSetupDraftError("");
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number(p.guardian_count || 3) + 1);
+                        const m = Math.min(Math.max(1, Number(p.threshold || 2)), n);
+                        return { ...p, guardian_count: n, threshold: m };
+                      });
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+
+                <div className="fx-centered fx-start-h" style={{ marginTop: ".75rem", gap: ".5rem", flexWrap: "wrap" }}>
                   <button className="btn btn-small" type="button" onClick={handleGenerateGroup}>Generate group</button>
-                  <button className="btn btn-small" type="button" onClick={() => copyText(setupDraft.group_id || "", "Copied")}>Copy group_id</button>
+                  <button className="btn btn-small" type="button" onClick={() => copyText(buildGuardianGroupIdFromPubkey(setupDraft.group_pubkey) || "", "Copied")}>Copy group_id</button>
                   <button className="btn btn-small" type="button" onClick={() => copyText(setupDraft.group_pubkey || "", "Copied")}>Copy group_pubkey</button>
                 </div>
-                <input className="if ifs-full" style={{ marginTop: ".5rem" }} placeholder="group_id (generated)" value={setupDraft.group_id}
-                  onChange={(e) => setSetupDraft((p) => ({ ...p, group_id: e.target.value }))} />
-                <input className="if ifs-full" style={{ marginTop: ".5rem" }} placeholder="group_pubkey (required)" value={setupDraft.group_pubkey}
-                  onChange={(e) => setSetupDraft((p) => ({ ...p, group_pubkey: e.target.value }))} />
+
+                <input
+                  className="if ifs-full"
+                  style={{ marginTop: ".5rem" }}
+                  placeholder="group_pubkey (required)"
+                  value={setupDraft.group_pubkey}
+                  onChange={(e) => {
+                    setSetupDraftError("");
+                    setSetupDraft((p) => ({ ...p, group_pubkey: e.target.value }));
+                  }}
+                />
+
                 <p className="p-medium gray-c" style={{ marginTop: ".25rem" }}>
-                  group_pubkey is required. Generate once, then reuse the same group_id/group_pubkey across all guardian setup DMs.
+                  group_id is derived from group_pubkey automatically (you only need to share the same group_pubkey across all guardians).
                 </p>
                 <p className="p-medium gray-c" style={{ marginTop: ".25rem" }}>
-                  guardian_id is assigned automatically per group based on guardian DM order (1,2,3).
+                  guardian_id is assigned automatically per group based on guardian DM order (1,2,3,...).
                 </p>
+                {setupDraftError ? (
+                  <p className="p-medium" style={{ marginTop: ".25rem", color: "var(--red)" }}>
+                    {setupDraftError}
+                  </p>
+                ) : null}
                 <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem" }}>
                   <button className="btn btn-small" type="button" onClick={applyGuardianSetupToComposer}>Fill compose</button>
                   <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send now</button>
