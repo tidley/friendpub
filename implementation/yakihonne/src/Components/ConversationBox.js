@@ -48,6 +48,12 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [multiDeletion, setMultiDeletion] = useState([]);
   const [showDelete, setShowDelete] = useState(false);
   const [guardianShareJSON, setGuardianShareJSON] = useState("");
+
+  // Guardian secret shares must be stored per (group_id, guardian_id).
+  // Storing one global share in localStorage breaks when simulating multiple guardians
+  // in the same browser profile.
+  const GUARDIAN_SHARE_KEY_LEGACY = "guardian-share-json";
+  const GUARDIAN_SHARE_MAP_KEY = "guardian-share-map-v1";
   const [secretInputs, setSecretInputs] = useState({});
   const [setupChoiceByMsg, setSetupChoiceByMsg] = useState({});
   const [expandedMessages, setExpandedMessages] = useState({});
@@ -134,15 +140,91 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     }
   };
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setGuardianShareJSON(localStorage.getItem("guardian-share-json") || "");
+  const safeParse = (raw, fallback) => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
     }
+  };
+
+  const loadGuardianShareMap = () => {
+    if (typeof window === "undefined") return {};
+    const raw = localStorage.getItem(GUARDIAN_SHARE_MAP_KEY);
+    const parsed = raw ? safeParse(raw, {}) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  };
+
+  const saveGuardianShareMap = (map) => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(GUARDIAN_SHARE_MAP_KEY, JSON.stringify(map || {}));
+    } catch (e) {
+      // Quota handled elsewhere; don't crash here.
+      // eslint-disable-next-line no-console
+      console.warn("[guardian-share] persist failed", e?.message || e);
+    }
+  };
+
+  const resolveMyGuardianSlot = () => {
+    try {
+      if (!userKeys?.pub) return null;
+      const myNpub = asTrimmedString(nip19.npubEncode(userKeys.pub));
+      const setups = (typeof getActiveGuardianSetups === "function" ? getActiveGuardianSetups() : []) || [];
+      const mine = setups
+        .filter((s) => asTrimmedString(s?.guardian_npub) === myNpub && asTrimmedString(s?.group_id))
+        .sort((a, b) => Number(b?.updated_at || b?.created_at || 0) - Number(a?.updated_at || a?.created_at || 0));
+      const chosen = mine[0];
+      if (!chosen?.group_id || !chosen?.guardian_id) return null;
+      return {
+        group_id: asTrimmedString(chosen.group_id),
+        guardian_id: Number(chosen.guardian_id),
+        group_pubkey: asTrimmedString(chosen.group_pubkey),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const shareMapKeyFor = (group_id, guardian_id) => `${asTrimmedString(group_id)}:${Number(guardian_id)}`;
+
+  const getGuardianShareFor = ({ group_id, guardian_id }) => {
+    const map = loadGuardianShareMap();
+    const k = shareMapKeyFor(group_id, guardian_id);
+    const raw = map?.[k];
+    return typeof raw === "string" ? raw : "";
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Prefer per-guardian share map. Fall back to legacy single-slot storage.
+    const slot = resolveMyGuardianSlot();
+    const mapValue = slot ? getGuardianShareFor(slot) : "";
+    if (mapValue) {
+      setGuardianShareJSON(mapValue);
+      return;
+    }
+
+    setGuardianShareJSON(localStorage.getItem(GUARDIAN_SHARE_KEY_LEGACY) || "");
   }, []);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("guardian-share-json", guardianShareJSON || "");
+    if (typeof window === "undefined") return;
+
+    // Persist into per-guardian slot if we can resolve one; otherwise keep legacy behavior.
+    const slot = resolveMyGuardianSlot();
+    if (slot?.group_id && Number.isFinite(Number(slot.guardian_id))) {
+      const map = loadGuardianShareMap();
+      map[shareMapKeyFor(slot.group_id, slot.guardian_id)] = guardianShareJSON || "";
+      saveGuardianShareMap(map);
+      return;
+    }
+
+    try {
+      localStorage.setItem(GUARDIAN_SHARE_KEY_LEGACY, guardianShareJSON || "");
+    } catch {
+      // ignore
     }
   }, [guardianShareJSON]);
 
@@ -276,8 +358,6 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     try {
       setShowProgress(true);
       if (Number(rotationReq?.version) === 2) {
-        if (!guardianShareJSON) throw new Error("Missing guardian share JSON");
-        const share = JSON.parse(guardianShareJSON);
         let candidates = findGuardianSetupsForRequestV2(rotationReq);
         if (candidates.length === 0) {
           const fallback = getActiveGuardianSetups().filter(
@@ -317,18 +397,34 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             (_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`,
           ) || validCandidates[0];
 
-        // Safety: ensure the guardian share JSON matches the chosen setup.
-        // If two guardians accidentally use the same share (e.g. id=1), you can get
-        // duplicated partials and an invalid aggregate proof.
+        // Select the correct share *for this guardian*.
+        // Prefer a per-(group_id, guardian_id) stored share; fall back to legacy single-slot.
+        const shareRaw =
+          (chosen?.group_id && chosen?.guardian_id
+            ? getGuardianShareFor({ group_id: chosen.group_id, guardian_id: chosen.guardian_id })
+            : "") || guardianShareJSON;
+
+        if (!shareRaw) {
+          throw new Error(
+            "Missing guardian share for this guardian. If you're running multiple guardians in one browser profile, you must store a distinct share per guardian.",
+          );
+        }
+        const share = JSON.parse(shareRaw);
+
+        // Safety: ensure the guardian share matches the chosen setup.
         if (Number.isFinite(Number(share?.id)) && Number(chosen?.guardian_id) !== Number(share?.id)) {
           throw new Error(
             `Guardian share mismatch: setup guardian_id=${Number(chosen?.guardian_id)} but share.id=${Number(share?.id)}. ` +
               `Each guardian must use their own distinct share JSON.`,
           );
         }
-        if (share?.groupPubkey && chosen?.group_pubkey && `${share.groupPubkey}`.trim().toLowerCase() !== `${chosen.group_pubkey}`.trim().toLowerCase()) {
+        if (
+          share?.groupPubkey &&
+          chosen?.group_pubkey &&
+          `${share.groupPubkey}`.trim().toLowerCase() !== `${chosen.group_pubkey}`.trim().toLowerCase()
+        ) {
           throw new Error(
-            "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. Ensure you pasted the correct share JSON for this group.",
+            "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. Ensure the share JSON belongs to this group.",
           );
         }
 
