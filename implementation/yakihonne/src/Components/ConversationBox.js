@@ -316,7 +316,23 @@ export function ConversationBox({ convo, back, noHeader = false }) {
           validCandidates.find(
             (_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`,
           ) || validCandidates[0];
-          const payload = buildRotationAttestationV2({
+
+        // Safety: ensure the guardian share JSON matches the chosen setup.
+        // If two guardians accidentally use the same share (e.g. id=1), you can get
+        // duplicated partials and an invalid aggregate proof.
+        if (Number.isFinite(Number(share?.id)) && Number(chosen?.guardian_id) !== Number(share?.id)) {
+          throw new Error(
+            `Guardian share mismatch: setup guardian_id=${Number(chosen?.guardian_id)} but share.id=${Number(share?.id)}. ` +
+              `Each guardian must use their own distinct share JSON.`,
+          );
+        }
+        if (share?.groupPubkey && chosen?.group_pubkey && `${share.groupPubkey}`.trim().toLowerCase() !== `${chosen.group_pubkey}`.trim().toLowerCase()) {
+          throw new Error(
+            "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. Ensure you pasted the correct share JSON for this group.",
+          );
+        }
+
+        const payload = buildRotationAttestationV2({
           req: rotationReq,
           setup: chosen,
           share,
