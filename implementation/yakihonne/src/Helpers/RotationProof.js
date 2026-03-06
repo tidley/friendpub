@@ -47,7 +47,9 @@ const rotateMsgHash = (oldNpub, newNpub, nonce) =>
   sha256(utf8ToBytes(`rotate|${oldNpub}|${newNpub}|${nonce}`));
 
 export const buildRotationPartial = (req, share) => {
-  const participantIds = req.participant_ids || [1, 2, 3];
+  const participantIds = (req.participant_ids && Array.isArray(req.participant_ids) && req.participant_ids.length >= 2)
+    ? req.participant_ids
+    : [1, 2, 3];
   const msg = rotateMsgHash(req.old_npub, req.new_npub, req.nonce);
   const x_i = hexToBig(share.share);
   const id = Number(share.id);
@@ -136,7 +138,9 @@ export const buildRotationAttestationV2 = ({ req, setup, share }) => {
       old_npub: setup.owner_old_npub,
       new_npub: req.new_npub,
       nonce: req.nonce,
-      participant_ids: setup.participant_ids || [1, 2, 3],
+      participant_ids: (req.participant_ids && Array.isArray(req.participant_ids) && req.participant_ids.length >= 2)
+        ? req.participant_ids
+        : (setup.participant_ids || [1, 2, 3]),
     },
     share,
   );
@@ -258,6 +262,7 @@ export const parseRotationRequestV2 = (raw) => {
     group_id: (j.group_id || "").trim(),
     old_npub: (j.old_npub || j.old_npub_hint || "").trim(),
     guardian_id: Number(j.guardian_id),
+    participant_ids: Array.isArray(j.participant_ids) ? j.participant_ids.map(Number) : null,
     new_npub: (j.new_npub || "").trim(),
     secret_proof: (j.secret_proof || "").trim(),
     nonce: (j.nonce || "").trim(),
@@ -279,6 +284,33 @@ export const parseRotationAttestationV2 = (raw) => {
     old_npub: (j.old_npub || "").trim(),
     new_npub: (j.new_npub || "").trim(),
     nonce: (j.nonce || "").trim(),
+  };
+};
+
+// Secret share provisioning (sent requester -> guardian via NIP-17 DM)
+export const parseGuardianShareV1 = (raw) => {
+  const j = parseJSONCandidate(raw);
+  if (!j || j.type !== "guardian-share" || Number(j.version) !== 1) return null;
+  if (!j.group_id || !Number.isInteger(Number(j.guardian_id)) || !j.group_pubkey || !j.share) return null;
+  const group_id = (j.group_id || "").trim();
+  const guardian_id = Number(j.guardian_id);
+  const group_pubkey = (j.group_pubkey || "").trim();
+  const share = (j.share || "").trim();
+  if (!/^g_[0-9a-f]{8,}$/i.test(group_id)) return null;
+  if (!isHex(group_pubkey, 64) && !isHex(group_pubkey, 66)) {
+    // allow compressed pubkey hex (33 bytes => 66 hex)
+    return null;
+  }
+  if (!isHex(share, 64)) return null;
+
+  return {
+    ...j,
+    version: 1,
+    type: "guardian-share",
+    group_id,
+    guardian_id,
+    group_pubkey,
+    share,
   };
 };
 

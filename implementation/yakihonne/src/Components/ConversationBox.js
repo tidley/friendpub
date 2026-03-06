@@ -18,11 +18,12 @@ import {
   buildRotationAttestationV2,
   buildRotationPartial,
   deriveGuardianSecretProof,
+  parseGuardianShareV1,
   parseRotationAttestationV2,
   parseRotationRequest,
   parseRotationRequestV2,
 } from "@/Helpers/RotationProof";
-import { getRandomPrivateKeyBytes, deriveCompressedPubkeyHex } from "@/Helpers/GuardianGroup";
+import { getRandomPrivateKeyBytes, deriveCompressedPubkeyHex, dealerSplitSecret2of3 } from "@/Helpers/GuardianGroup";
 import {
   findGuardianSetupsForRequestV2,
   getActiveGuardianSetups,
@@ -90,6 +91,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const protocolTypes = new Set([
     "guardian-setup",
     "guardian-setup-update",
+    "guardian-share",
     "rotation-request",
     "rotation-attestation",
   ]);
@@ -229,7 +231,39 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   }, [guardianShareJSON]);
 
   useEffect(() => {
-    if (convo?.convo?.length) ingestGuardianSetupsFromConversation(convo);
+    if (!convo?.convo?.length) return;
+
+    // Index guardian setup metadata
+    ingestGuardianSetupsFromConversation(convo);
+
+    // Ingest secret shares from DMs (requester -> guardian)
+    // and persist into the per-(group_id, guardian_id) share map.
+    try {
+      if (typeof window === "undefined") return;
+      const map = loadGuardianShareMap();
+      let changed = false;
+      for (const msg of convo.convo || []) {
+        const raw = msg?.raw_content || msg?.content;
+        const s = parseGuardianShareV1(raw);
+        if (!s) continue;
+        const k = shareMapKeyFor(s.group_id, s.guardian_id);
+        const existing = typeof map?.[k] === "string" ? map[k] : "";
+        const next = JSON.stringify({
+          id: Number(s.guardian_id),
+          share: s.share,
+          threshold: Number(s.threshold || 2),
+          groupPubkey: s.group_pubkey,
+        });
+        if (existing !== next) {
+          map[k] = next;
+          changed = true;
+        }
+      }
+      if (changed) saveGuardianShareMap(map);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[guardian-share] ingest failed", e?.message || e);
+    }
   }, [convo]);
 
   useEffect(() => {
@@ -346,6 +380,30 @@ export function ConversationBox({ convo, back, noHeader = false }) {
       devJsonAssert(payloadText, "guardian-setup-send");
       setShowProgress(true);
       await sendMessage(convo.pubkey, payloadText);
+
+      // If requester has a guardian share stored for this (group_id, guardian_id), send it now.
+      // This allows fully automatic provisioning: requester -> guardian-share DM -> guardian auto-ingests.
+      try {
+        const shareRaw = getGuardianShareFor({ group_id: payload.group_id, guardian_id: payload.guardian_id });
+        if (shareRaw) {
+          const share = JSON.parse(shareRaw);
+          const shareMsg = {
+            type: "guardian-share",
+            version: 1,
+            group_id: payload.group_id,
+            guardian_id: payload.guardian_id,
+            threshold: payload.threshold,
+            group_pubkey: payload.group_pubkey,
+            share: String(share.share || "").trim(),
+            created_at: Math.floor(Date.now() / 1000),
+          };
+          devJsonAssert(JSON.stringify(shareMsg), "guardian-share-send");
+          await sendMessage(convo.pubkey, JSON.stringify(shareMsg));
+        }
+      } catch (e2) {
+        console.warn("[guardian-share] auto-send failed", e2?.message || e2);
+      }
+
       setShowProgress(false);
       setShowSetupBuilder(false);
     } catch (e) {

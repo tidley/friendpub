@@ -299,6 +299,8 @@ function KeyRotationDemoPage() {
           req_id: reqId,
           group_id: groupIdForReq || null,
           guardian_id,
+          // signer set for this request (keeps math consistent for 2-of-2 demo path)
+          participant_ids: [1, 2],
           claimed_name: "",
           old_npub: oldNpubForReq,
           old_npub_hint: oldNpubForReq,
