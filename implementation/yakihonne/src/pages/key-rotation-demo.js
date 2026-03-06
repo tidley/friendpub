@@ -253,6 +253,7 @@ export default function KeyRotationDemoPage() {
           old_npub: oldNpubForReq,
           old_npub_hint: oldNpubForReq,
           new_npub: resolvedNewNpub,
+          shared_secret: row.secret.trim(),
           secret_proof: deriveGuardianSecretProof({
             sharedSecret: row.secret.trim(),
             req_id: reqId,

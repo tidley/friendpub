@@ -290,15 +290,17 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             count: fallback.length,
           });
         }
+        const messageSecret = (rotationReq?.shared_secret || "").trim();
         const typedSecret = (secretInputs[msgId] || "").trim();
-        if (!typedSecret) throw new Error("Enter shared secret");
+        const sharedSecret = messageSecret || typedSecret;
+        if (!sharedSecret) throw new Error("Enter shared secret");
         const validCandidates = candidates.filter((c) => {
           const proof = deriveGuardianSecretProof({
-            sharedSecret: typedSecret,
+            sharedSecret,
             req_id: rotationReq.req_id,
             nonce: rotationReq.nonce,
             group_id: rotationReq.group_id || c.group_id,
-            old_npub: rotationReq.old_npub || c.owner_old_npub,
+            old_npub: rotationReq.old_npub || rotationReq.old_npub_hint || c.owner_old_npub,
             guardian_id: rotationReq.guardian_id,
           });
           return proof === rotationReq.secret_proof;
@@ -693,17 +695,38 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                           </p>
                           {Number(rotationReq?.version) === 2 && (
                             <>
-                              <input
-                                className="if ifs-full"
-                                placeholder="Shared secret"
-                                value={secretInputs[msgId] || ""}
-                                onChange={(e) =>
-                                  setSecretInputs((prev) => ({
-                                    ...prev,
-                                    [msgId]: e.target.value,
-                                  }))
-                                }
-                              />
+                              {rotationReq?.shared_secret ? (
+                                <div className="fit-container" style={{ display: "grid", gap: ".35rem" }}>
+                                  <p className="p-small gray-c" style={{ margin: 0 }}>
+                                    Shared secret (from requester)
+                                  </p>
+                                  <pre
+                                    className="fit-container"
+                                    style={{
+                                      margin: 0,
+                                      padding: ".5rem",
+                                      border: "1px solid var(--dim-gray)",
+                                      borderRadius: "8px",
+                                      overflowWrap: "anywhere",
+                                      whiteSpace: "pre-wrap",
+                                    }}
+                                  >
+                                    {String(rotationReq.shared_secret)}
+                                  </pre>
+                                </div>
+                              ) : (
+                                <input
+                                  className="if ifs-full"
+                                  placeholder="Shared secret"
+                                  value={secretInputs[msgId] || ""}
+                                  onChange={(e) =>
+                                    setSecretInputs((prev) => ({
+                                      ...prev,
+                                      [msgId]: e.target.value,
+                                    }))
+                                  }
+                                />
+                              )}
                               {setupCandidatesForUi.length > 1 && (
                                 <select
                                   className="if ifs-full"
@@ -855,12 +878,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             </div>
             {showSetupBuilder && (
               <div className="sc-s-18 box-pad-h-s box-pad-v-s" style={{ border: "1px solid var(--dim-gray)" }}>
-                <div className="fit-container fx-centered" style={{ gap: ".5rem", flexWrap: "wrap" }}>
-                  <input className="if" placeholder="threshold" value={setupDraft.threshold}
-                    onChange={(e) => setSetupDraft((p) => ({ ...p, threshold: Number(e.target.value || 2) }))} />
-                  <input className="if" placeholder="guardian_count" value={setupDraft.guardian_count}
-                    onChange={(e) => setSetupDraft((p) => ({ ...p, guardian_count: Number(e.target.value || 3) }))} />
-                </div>
+                <p className="p-medium gray-c" style={{ margin: 0 }}>
+                  Guardian setup uses a fixed threshold of <strong>2-of-3</strong>.
+                </p>
                 <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem", flexWrap: "wrap" }}>
                   <button className="btn btn-small" type="button" onClick={handleGenerateGroup}>Generate group</button>
                   <button className="btn btn-small" type="button" onClick={() => copyText(setupDraft.group_id || "", "Copied")}>Copy group_id</button>
