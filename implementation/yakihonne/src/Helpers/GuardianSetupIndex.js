@@ -24,9 +24,77 @@ export const loadGuardianSetupIndex = () => {
     : { byRecordId: {}, seen: {}, updated_at: 0 };
 };
 
+const pruneGuardianSetupIndex = (index, limits = { maxSeen: 5000, maxRecords: 2000 }) => {
+  if (!index || typeof index !== "object") return { byRecordId: {}, seen: {}, updated_at: nowSec() };
+
+  const out = {
+    byRecordId: index.byRecordId && typeof index.byRecordId === "object" ? index.byRecordId : {},
+    seen: index.seen && typeof index.seen === "object" ? index.seen : {},
+    updated_at: Number(index.updated_at || nowSec()),
+  };
+
+  // Prune `seen` (unbounded growth risk). Keep newest by approximating recency from the msgId prefix
+  // which is often `${created_at}:${pubkey}`.
+  try {
+    const entries = Object.entries(out.seen);
+    if (entries.length > limits.maxSeen) {
+      entries.sort((a, b) => {
+        const ta = Number(String(a[0]).split(":")[0]) || 0;
+        const tb = Number(String(b[0]).split(":")[0]) || 0;
+        return tb - ta;
+      });
+      out.seen = Object.fromEntries(entries.slice(0, limits.maxSeen));
+    }
+  } catch {
+    // ignore prune failures
+  }
+
+  // Prune `byRecordId` by updated_at
+  try {
+    const entries = Object.entries(out.byRecordId);
+    if (entries.length > limits.maxRecords) {
+      entries.sort((a, b) => Number(b[1]?.updated_at || 0) - Number(a[1]?.updated_at || 0));
+      out.byRecordId = Object.fromEntries(entries.slice(0, limits.maxRecords));
+    }
+  } catch {
+    // ignore prune failures
+  }
+
+  return out;
+};
+
 export const saveGuardianSetupIndex = (index) => {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(index || { byRecordId: {}, seen: {}, updated_at: nowSec() }));
+  const payload = pruneGuardianSetupIndex(index || { byRecordId: {}, seen: {}, updated_at: nowSec() });
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (e) {
+    // Lossy, non-crashing behavior on quota issues.
+    const name = e?.name || "";
+    const msg = e?.message || "";
+    const isQuota = name === "QuotaExceededError" || /quota/i.test(msg);
+    if (!isQuota) {
+      console.warn("[guardian-setup-index] failed to persist index", e);
+      return;
+    }
+
+    console.warn("[guardian-setup-index] localStorage quota exceeded; pruning/clearing and continuing");
+
+    // Attempt recovery: remove our key and retry with more aggressive pruning.
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+
+    try {
+      const smaller = pruneGuardianSetupIndex(payload, { maxSeen: 1000, maxRecords: 500 });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(smaller));
+    } catch (e2) {
+      // Give up silently; app must keep running.
+      console.warn("[guardian-setup-index] persist retry failed; running without persistence", e2);
+    }
+  }
 };
 
 const messageIdFor = (msg) => msg?.giftWrapId || msg?.id || `${msg?.created_at || 0}:${msg?.pubkey || ""}`;
