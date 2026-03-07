@@ -19,8 +19,6 @@ const isHex = (v, min = 2) => typeof v === "string" && /^[0-9a-f]+$/i.test(v) &&
 
 export const buildGuardianSetupRecordId = ({ group_id, guardian_id, owner_old_npub }) =>
   sha256Hex(`${(group_id || "").trim()}|${Number(guardian_id)}|${(owner_old_npub || "").trim()}`);
-export const buildGuardianGroupId = ({ owner_old_npub, guardian_npub, threshold = 2, guardian_count = 3 }) =>
-  `g_${sha256Hex(`${owner_old_npub}|${guardian_npub}|${threshold}|${guardian_count}`).slice(0, 20)}`;
 
 // Deterministic group_id derived from a group pubkey (hex, 64 chars).
 // This is used to avoid asking the user for both group_id and group_pubkey.

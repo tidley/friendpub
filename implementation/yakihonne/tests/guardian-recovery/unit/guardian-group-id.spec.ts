@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { nip19 } from "nostr-tools";
+import * as secp from "@noble/secp256k1";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { computeDeterministicGroupId } from "../../../src/Helpers/GuardianGroupId";
 
+const sha256Hex = (s: string) => secp.etc.bytesToHex(sha256(utf8ToBytes(s)));
+
 describe("computeDeterministicGroupId", () => {
-  it("is deterministic and order-invariant for the same guardian set", () => {
+  it("matches the spec formula and is order-invariant", () => {
     const pk1 = "1".repeat(64);
     const pk2 = "2".repeat(64);
     const pk3 = "3".repeat(64);
@@ -13,7 +18,13 @@ describe("computeDeterministicGroupId", () => {
     const gidA = computeDeterministicGroupId({ threshold: 2, guardian_npubs: npubs });
     const gidB = computeDeterministicGroupId({ threshold: 2, guardian_npubs: [npubs[2], npubs[0], npubs[1]] });
 
+    // reference implementation (do not call helper)
+    const sorted = [pk1, pk2, pk3].map((s) => s.toLowerCase()).sort();
+    const preimage = `guardian-setup:v1|2|${sorted.join(",")}`;
+    const expected = `g_${sha256Hex(preimage)}`;
+
     expect(gidA).toMatch(/^g_[0-9a-f]{64}$/i);
+    expect(gidA).toBe(expected);
     expect(gidA).toBe(gidB);
   });
 
