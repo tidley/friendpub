@@ -14,7 +14,6 @@ import { computeDeterministicGroupId } from "@/Helpers/GuardianGroupId";
 import { InitEvent } from "@/Helpers/Controlers";
 import { setToPublish } from "@/Store/Slides/Publishers";
 import { dmRelaysOnPlatform, relaysOnPlatform } from "@/Content/Relays";
-import { setUserChatrooms, setUserKeys } from "@/Store/Slides/UserData";
 import {
   getActiveGuardianSetups,
   ingestGuardianSetupsFromChatrooms,
@@ -159,40 +158,6 @@ function KeyRotationDemoPage() {
     });
   }, [guardianCount]);
 
-  // Playwright/E2E helpers (test-only): seed redux state without relying on live relays.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const isE2E = Boolean(window.__PLAYWRIGHT__) || process.env.NEXT_PUBLIC_E2E === "1";
-    if (!isE2E) return;
-
-    window.__yakihonneTest = window.__yakihonneTest || {};
-
-    window.__yakihonneTest.setUserKeys = (keys) => dispatch(setUserKeys(keys));
-    window.__yakihonneTest.setUserChatrooms = (rooms) => dispatch(setUserChatrooms(rooms));
-
-    // Seed rotation-attestation v2 messages into userChatrooms.
-    // attestations: [{ from_pubkey: string, raw: string, created_at?: number }]
-    window.__yakihonneTest.seedRotationAttestationsV2 = ({ attestations }) => {
-      const now = Math.floor(Date.now() / 1000);
-      const msgs = Array.isArray(attestations) ? attestations : [];
-      const nextRooms = msgs.map((a) => ({
-        pubkey: String(a?.from_pubkey || "").trim() || "test-guardian",
-        convo: [
-          {
-            id: `${String(a?.from_pubkey || "g").slice(0, 12)}:${a?.created_at || now}`,
-            created_at: Number(a?.created_at || now),
-            raw_content: String(a?.raw || ""),
-            content: String(a?.raw || ""),
-          },
-        ],
-      }));
-      dispatch(setUserChatrooms(nextRooms));
-      return { rooms: nextRooms.length };
-    };
-
-    window.__yakihonneTest.getDemoIds = () => ({ nonce, reqId, computedGroupId });
-  }, [dispatch, nonce, reqId, computedGroupId]);
 
   const collectPartials = () => {
     const reqNonce = nonce.trim();
