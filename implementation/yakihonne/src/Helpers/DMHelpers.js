@@ -6,12 +6,12 @@ import {
 } from "nostr-tools";
 import { bytesTohex, encrypt04, encrypt44 } from "./Encryptions";
 import { InitEvent, updateYakiChestStats } from "./Controlers";
-import { NDKEvent } from "@nostr-dev-kit/ndk";
+import { NDKEvent, NDKRelaySet } from "@nostr-dev-kit/ndk";
 import { store } from "@/Store/Store";
 import { setToast, setToPublish } from "@/Store/Slides/Publishers";
 import { t } from "i18next";
 import { checkCurrentConvo, getInboxRelaysForUser, removeMessage } from "./DB";
-import { relaysOnPlatform } from "@/Content/Relays";
+import { dmRelaysOnPlatform, relaysOnPlatform } from "@/Content/Relays";
 import { getKeys } from "./ClientHelpers";
 import axiosInstance from "./HTTP_Client";
 import { getNDKInstanceForDMs } from "./utils/ndkInstancesForDMsCache";
@@ -31,10 +31,13 @@ export const sendMessage = async (selectedPerson, message, replyOn) => {
     return;
   let userInboxRelays = store.getState().userInboxRelays;
   let otherPartyRelays = await getInboxRelaysForUser(selectedPerson);
+  // For NIP-17 DMs we want at least one NIP-17-capable relay in the mix.
+  // We still include user inbox relays and other party inbox relays when available.
   let relaysToPublish = [
     ...new Set([
       ...userInboxRelays,
       ...(otherPartyRelays.length > 0 ? otherPartyRelays : relaysOnPlatform),
+      ...dmRelaysOnPlatform,
     ]),
   ];
 
@@ -233,22 +236,90 @@ const getEventKind13 = async (
   return event;
 };
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const isRetriablePublishError = (err) => {
+  const msg = `${err?.message || err}`.toLowerCase();
+  return (
+    err?.name === "NDKPublishError" ||
+    msg.includes("not enough relays") ||
+    msg.includes("connection refused") ||
+    msg.includes("timed out") ||
+    msg.includes("timeout") ||
+    msg.includes("relay not found in pool") ||
+    msg.includes("websocket")
+  );
+};
+
+// Ensure relays are in the pool and connected before publish.
+const buildRelaySetForPublish = (ndk, relayUrls) => {
+  const urls = [...new Set((relayUrls || []).filter(Boolean))];
+  urls.forEach((url) => {
+    // addExplicitRelay is idempotent-ish: pool will keep the first instance per URL.
+    if (!ndk.pool?.relays?.has?.(url)) ndk.addExplicitRelay(url);
+  });
+  return NDKRelaySet.fromRelayUrls(urls, ndk, true);
+};
+
+export const preflightDMRelayConnection = async (name, relays) => {
+  const ndkInstanceForDM = await getNDKInstanceForDMs(name, relays);
+  buildRelaySetForPublish(ndkInstanceForDM, relays);
+  const connected = ndkInstanceForDM.pool?.connectedRelays?.() || [];
+  return connected.length;
+};
+
 const initPublishing = async (name, relays, event1, event2) => {
   try {
-    let ndkInstanceForDM = await getNDKInstanceForDMs(name, relays);
-    let ev1 = new NDKEvent(ndkInstanceForDM, event1);
-    let ev2 = new NDKEvent(ndkInstanceForDM, event2);
+    const ndkInstanceForDM = await getNDKInstanceForDMs(name, relays);
+    const relaySet = buildRelaySetForPublish(ndkInstanceForDM, relays);
 
-    let [res1, res2] = await Promise.race([ev1.publish(), ev2.publish()]);
+    // Preflight: abort early if we have no connected relays.
+    const connected = ndkInstanceForDM.pool?.connectedRelays?.() || [];
+    if (!connected.length) {
+      store.dispatch(
+        setToast({
+          type: 2,
+          desc:
+            "No DM relays are connected. Check relay URLs / network and try again.",
+        }),
+      );
+      return false;
+    }
 
-    store.dispatch(
-      setToast({
-        type: 1,
-        desc: t("Ax4F7eu"),
-      }),
-    );
+    const ev1 = new NDKEvent(ndkInstanceForDM, event1);
+    const ev2 = new NDKEvent(ndkInstanceForDM, event2);
 
-    return true;
+    const backoffs = [250, 1000, 3000];
+
+    for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+      try {
+        const [res1, res2] = await Promise.all([
+          ev1.publish(relaySet, 5000, 1),
+          ev2.publish(relaySet, 5000, 1),
+        ]);
+
+        if (!(res1?.size > 0 && res2?.size > 0)) {
+          throw new Error(
+            `DM publish incomplete (sender:${res1?.size || 0}, receiver:${res2?.size || 0})`,
+          );
+        }
+
+        store.dispatch(
+          setToast({
+            type: 1,
+            desc: t("Ax4F7eu"),
+          }),
+        );
+
+        return true;
+      } catch (err) {
+        const canRetry = attempt < backoffs.length && isRetriablePublishError(err);
+        if (!canRetry) throw err;
+        await sleep(backoffs[attempt]);
+      }
+    }
+
+    return false;
   } catch (err) {
     console.log(err);
     store.dispatch(
@@ -261,7 +332,18 @@ const initPublishing = async (name, relays, event1, event2) => {
   }
 };
 
+const isYakiChestDisabled = () => {
+  // Client-side feature flag.
+  // - Explicitly disable with NEXT_PUBLIC_DISABLE_YAKI_CHEST=1/true
+  // - Default: disabled in dev, enabled in prod.
+  const raw = process.env.NEXT_PUBLIC_DISABLE_YAKI_CHEST;
+  if (raw !== undefined) return raw === "1" || raw === "true";
+  return process.env.NODE_ENV !== "production";
+};
+
 const updateYakiChest = async (action_key) => {
+  if (isYakiChestDisabled()) return;
+
   try {
     let data = await axiosInstance.post("/api/v1/yaki-chest", {
       action_key,
@@ -273,6 +355,7 @@ const updateYakiChest = async (action_key) => {
       updateYakiChestStats(user_stats);
     }
   } catch (err) {
+    // Avoid failing core DM sending due to optional stats backend.
     console.log(err);
   }
 };

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { nip19 } from "nostr-tools";
 import { useDispatch, useSelector } from "react-redux";
-import { sendMessage } from "@/Helpers/DMHelpers";
+import { preflightDMRelayConnection, sendMessage } from "@/Helpers/DMHelpers";
 import {
   aggregateRotationProof,
   deriveGuardianSecretProof,
@@ -12,7 +12,7 @@ import {
 } from "@/Helpers/RotationProof";
 import { InitEvent } from "@/Helpers/Controlers";
 import { setToPublish } from "@/Store/Slides/Publishers";
-import { relaysOnPlatform } from "@/Content/Relays";
+import { dmRelaysOnPlatform, relaysOnPlatform } from "@/Content/Relays";
 import {
   getActiveGuardianSetups,
   ingestGuardianSetupsFromChatrooms,
@@ -266,6 +266,18 @@ function KeyRotationDemoPage() {
       const reqNonce = crypto.randomUUID();
       if (!resolvedNewNpub) throw new Error("Login required (new npub is current account)");
       if (!oldNpub.trim()) throw new Error("old npub required (recovery mode)");
+
+      // Preflight: ensure we have at least one DM relay connected before attempting N sends.
+      const preflightRelays = [...new Set([...(userInboxRelays || []), ...dmRelaysOnPlatform, ...relaysOnPlatform])];
+      const connectedCount = await preflightDMRelayConnection(
+        `rotation-demo:${userKeys?.pub || "anon"}`,
+        preflightRelays,
+      );
+      if (!connectedCount) {
+        throw new Error(
+          "No DM relays connected (preflight failed). Set NEXT_PUBLIC_DM_RELAYS to working NIP-17 relays and retry.",
+        );
+      }
 
       let okCount = 0;
       // Demo path: use guardians 1 and 2 as the signing set.
