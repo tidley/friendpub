@@ -33,36 +33,41 @@ function KeyRotationDemoPage() {
   const userChatrooms = useSelector((state) => state.userChatrooms);
   const userInboxRelays = useSelector((state) => state.userInboxRelays);
 
+  // Simplified demo UX: requester is always in recovery mode.
+  // - new_npub always = currently logged in account
+  // - nonce always auto-generated
+  // - no setup dropdown
   const [oldNpub, setOldNpub] = useState("");
-  const [newNpub, setNewNpub] = useState("");
   const [nonce, setNonce] = useState("");
   const [reason, setReason] = useState("key compromise");
   const [guardiansRows, setGuardiansRows] = useState(emptyGuardians);
-  const [selectedSetupId, setSelectedSetupId] = useState("");
-  const [recoveryMode, setRecoveryMode] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState("");
   const [partialRows, setPartialRows] = useState([]);
   const [proofPayload, setProofPayload] = useState(null);
 
   const resolvedNewNpub = useMemo(() => {
-    if (newNpub.trim()) return newNpub.trim();
     try {
       return userKeys?.pub ? nip19.npubEncode(userKeys.pub) : "";
     } catch {
       return "";
     }
-  }, [newNpub, userKeys]);
+  }, [userKeys]);
 
   const indexedSetups = useMemo(() => {
     ingestGuardianSetupsFromChatrooms(userChatrooms || []);
     return getActiveGuardianSetups();
   }, [userChatrooms]);
 
-  const selectedSetup = useMemo(
-    () => indexedSetups.find((s) => s.record_id === selectedSetupId) || indexedSetups[0] || null,
-    [indexedSetups, selectedSetupId],
-  );
+  // For aggregation/publish, we still need a group_pubkey. With the setup dropdown removed,
+  // use the first setup that has a group_pubkey.
+  const setupForAggregation = useMemo(() => {
+    return (
+      indexedSetups.find((s) => s?.group_pubkey) ||
+      indexedSetups[0] ||
+      null
+    );
+  }, [indexedSetups]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -71,12 +76,13 @@ function KeyRotationDemoPage() {
     try {
       const s = JSON.parse(raw);
       setOldNpub(s.oldNpub || "");
-      setNewNpub(s.newNpub || "");
       setNonce(s.nonce || "");
       setReason(s.reason || "key compromise");
-      setGuardiansRows(Array.isArray(s.guardiansRows) && s.guardiansRows.length === 3 ? s.guardiansRows : emptyGuardians);
-      setSelectedSetupId(s.selectedSetupId || "");
-      setRecoveryMode(!!s.recoveryMode);
+      setGuardiansRows(
+        Array.isArray(s.guardiansRows) && s.guardiansRows.length === 3
+          ? s.guardiansRows
+          : emptyGuardians,
+      );
       // NOTE: do NOT restore large arrays/objects from localStorage (quota risk)
       // partialRows + proofPayload are intentionally not persisted.
       setPartialRows([]);
@@ -93,12 +99,9 @@ function KeyRotationDemoPage() {
         DEMO_STATE_KEY,
         JSON.stringify({
           oldNpub,
-          newNpub,
           nonce,
           reason,
           guardiansRows,
-          selectedSetupId,
-          recoveryMode,
         }),
       );
     } catch (e) {
@@ -106,7 +109,7 @@ function KeyRotationDemoPage() {
       // eslint-disable-next-line no-console
       console.warn("[key-rotation-demo] localStorage persist failed", e?.message || e);
     }
-  }, [oldNpub, newNpub, nonce, reason, guardiansRows, selectedSetupId, recoveryMode]);
+  }, [oldNpub, nonce, reason, guardiansRows]);
 
   const updateGuardianCell = (idx, key, value) => {
     setGuardiansRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
@@ -117,19 +120,11 @@ function KeyRotationDemoPage() {
     const reqNew = resolvedNewNpub;
     const rows = [];
 
-    // If a setup is selected, prefer matching that group_id to avoid mixing attestations from different setups.
-    const expectedGroupId = selectedSetup?.group_id || "";
-
     for (const room of userChatrooms || []) {
       for (const msg of room.convo || []) {
         const raw = msg.raw_content || msg.content;
         const v2 = parseRotationAttestationV2(raw);
-        if (
-          v2 &&
-          (!reqNew || v2.new_npub === reqNew) &&
-          (!reqNonce || v2.nonce === reqNonce) &&
-          (!expectedGroupId || v2.group_id === expectedGroupId)
-        ) {
+        if (v2 && (!reqNew || v2.new_npub === reqNew) && (!reqNonce || v2.nonce === reqNonce)) {
           rows.push({
             from: room.pubkey,
             created_at: msg.created_at || 0,
@@ -166,8 +161,7 @@ function KeyRotationDemoPage() {
       `collected ${rows.length} matching partial message(s) from ${uniqueFrom.length || uniqueIds.size} unique guardian(s)` +
         (uniqueFrom.length ? ` (from: ${uniqueFrom.map((f) => f.slice(0, 12) + "…").join(",")})` : "") +
         (!uniqueFrom.length && idsList.length ? ` (ids: ${idsList.join(",")})` : "") +
-        (uniqueGroupIds.length ? ` (group_ids: ${uniqueGroupIds.join(",")})` : "") +
-        (expectedGroupId ? ` (filtered to group_id=${expectedGroupId})` : ""),
+        (uniqueGroupIds.length ? ` (group_ids: ${uniqueGroupIds.join(",")})` : ""),
     );
   };
 
@@ -176,17 +170,17 @@ function KeyRotationDemoPage() {
       const reqNonce = nonce.trim();
       if (!reqNonce || !resolvedNewNpub) throw new Error("new npub/nonce required");
 
-      const derivedGroupId = selectedSetup?.group_id || partialRows.find((r) => r.group_id)?.group_id || "";
-      const setupForGroup =
-        indexedSetups.find((s) => s.group_id === derivedGroupId) || selectedSetup;
-      if (!setupForGroup?.group_pubkey)
-        throw new Error("group_pubkey missing for selected setup. Recovery request can still be sent, but aggregation requires group_pubkey.");
+      const setup = setupForAggregation;
+      if (!setup?.group_pubkey)
+        throw new Error(
+          "group_pubkey missing (no indexed guardian-setup with group_pubkey). Aggregation requires group_pubkey.",
+        );
+
+      const derivedGroupId =
+        setup?.group_id || partialRows.find((r) => r.group_id)?.group_id || "";
 
       const req = {
-        old_npub:
-          oldNpub.trim() ||
-          setupForGroup.owner_old_npub ||
-          partialRows.find((r) => r.old_npub)?.old_npub,
+        old_npub: oldNpub.trim() || setup.owner_old_npub || partialRows.find((r) => r.old_npub)?.old_npub,
         new_npub: resolvedNewNpub,
         nonce: reqNonce,
       };
@@ -197,10 +191,6 @@ function KeyRotationDemoPage() {
       const seenGuardians = new Set();
       const picked = [];
       for (const row of partialRows) {
-        // Avoid mixing partials from a different guardian setup/group.
-        if (row?.group_id && row.group_id !== setupForGroup.group_id) continue;
-
-        // Most robust key: sender pubkey ("from"). Fall back to partial.id only if missing.
         const guardianKey = (row?.from && String(row.from).trim())
           ? `from:${String(row.from).trim()}`
           : `id:${String(row?.partial?.id ?? "")}`;
@@ -217,25 +207,24 @@ function KeyRotationDemoPage() {
         const uniqIds = Array.from(
           new Set(partialRows.map((r) => r?.partial?.id).filter((x) => Number.isFinite(Number(x)))),
         ).sort((a, b) => Number(a) - Number(b));
-
         throw new Error(
           `need 2 unique guardian partials (found guardians: ${uniqFrom.join(",") || "none"}` +
             `${uniqIds.length ? `; partial.ids: ${uniqIds.join(",")}` : ""})`,
         );
       }
 
-      const signature = aggregateRotationProof(req, picked, setupForGroup.group_pubkey);
-      const valid_local = verifyRotationProof(req, signature, setupForGroup.group_pubkey);
+      const signature = aggregateRotationProof(req, picked, setup.group_pubkey);
+      const valid_local = verifyRotationProof(req, signature, setup.group_pubkey);
       const payload = {
         type: "rotation-proof",
         version: 2,
         old_npub: req.old_npub,
         new_npub: req.new_npub,
         nonce: req.nonce,
-        group_id: setupForGroup.group_id,
-        guardian_set_hash: `g-${setupForGroup.group_id}`,
+        group_id: derivedGroupId,
+        guardian_set_hash: derivedGroupId ? `g-${derivedGroupId}` : "",
         threshold: 2,
-        group_pubkey: setupForGroup.group_pubkey,
+        group_pubkey: setup.group_pubkey,
         participants: picked.map((p) => p.id),
         signature,
         valid_local,
@@ -273,14 +262,10 @@ function KeyRotationDemoPage() {
     try {
       setSending(true);
       setSendResult("");
-      const reqNonce = nonce.trim() || crypto.randomUUID();
-      if (!resolvedNewNpub) throw new Error("new npub required");
 
-      const setup = selectedSetup;
-      if (!recoveryMode && !setup?.group_id)
-        throw new Error("Select a guardian setup record or enable recovery mode");
-      if (recoveryMode && !oldNpub.trim())
-        throw new Error("old npub required in recovery mode");
+      const reqNonce = crypto.randomUUID();
+      if (!resolvedNewNpub) throw new Error("Login required (new npub is current account)");
+      if (!oldNpub.trim()) throw new Error("old npub required (recovery mode)");
 
       let okCount = 0;
       // Demo path: use guardians 1 and 2 as the signing set.
@@ -290,15 +275,17 @@ function KeyRotationDemoPage() {
         if (!row.secret?.trim()) throw new Error(`guardian #${i + 1} secret required`);
         const decoded = nip19.decode(row.npub.trim());
         if (decoded.type !== "npub") continue;
+
         const reqId = crypto.randomUUID();
         const guardian_id = i + 1;
-        const oldNpubForReq = oldNpub.trim() || setup?.owner_old_npub || "";
-        const groupIdForReq = recoveryMode ? "" : setup?.group_id || "";
+        const oldNpubForReq = oldNpub.trim();
+        const groupIdForReq = "";
+
         const payload = {
           type: "rotation-request",
           version: 2,
           req_id: reqId,
-          group_id: groupIdForReq || null,
+          group_id: null,
           guardian_id,
           // signer set for this request (keeps math consistent for 2-of-2 demo path)
           participant_ids: [1, 2],
@@ -320,12 +307,13 @@ function KeyRotationDemoPage() {
           created_at: Math.floor(Date.now() / 1000),
           expires_at: Math.floor(Date.now() / 1000) + 3600,
         };
+
         const ok = await sendMessage(decoded.data, JSON.stringify(payload));
         if (ok) okCount++;
       }
 
       setNonce(reqNonce);
-      setSendResult(`sent ${okCount}/3 rotation-request v2 DMs`);
+      setSendResult(`sent ${okCount} rotation-request v2 DM(s)`);
     } catch (e) {
       setSendResult(`send failed: ${e.message}`);
     } finally {
@@ -337,47 +325,22 @@ function KeyRotationDemoPage() {
     <div style={{ maxWidth: 920, margin: "24px auto", padding: "0 12px", color: "#e7ebff" }}>
       <h1 style={{ marginBottom: 8 }}>Key rotation demo (NIP-17 guardians)</h1>
       <p style={{ opacity: 0.8, marginTop: 0 }}>
-        Use setup-record mode when available, or recovery mode from a new npub without local setup records.
+        Simplified requester UX: recovery mode only. New npub is always your current account.
       </p>
 
       <section style={box}>
         <h3 style={h3}>Requester mode (send rotation request v2)</h3>
+
         <div style={grid}>
-          <input style={input} value={oldNpub} onChange={(e) => setOldNpub(e.target.value)} placeholder={recoveryMode ? "Old npub (required)" : "Old npub (optional hint)"} />
-          <input style={input} value={newNpub} onChange={(e) => setNewNpub(e.target.value)} placeholder="New npub (blank = logged in account)" />
-          <input style={input} value={nonce} onChange={(e) => setNonce(e.target.value)} placeholder="Nonce (blank = auto-generate)" />
-          <input style={input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" />
-        </div>
-
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 8 }}>
           <input
-            type="checkbox"
-            checked={recoveryMode}
-            onChange={(e) => setRecoveryMode(e.target.checked)}
+            style={input}
+            value={oldNpub}
+            onChange={(e) => setOldNpub(e.target.value)}
+            placeholder="Old npub (required)"
           />
-          Recovery mode (no setup record on this account)
-        </label>
-
-        <div style={{ marginTop: 8, opacity: recoveryMode ? 0.6 : 1 }}>
-          <label className="p-medium">Setup record</label>
-          <select
-            style={{ ...input, width: "100%", marginTop: 4 }}
-            disabled={recoveryMode}
-            value={selectedSetup?.record_id || ""}
-            onChange={(e) => setSelectedSetupId(e.target.value)}
-          >
-            {indexedSetups.length === 0 && <option value="">No setup records found in DMs</option>}
-            {indexedSetups.map((s) => (
-              <option key={s.record_id} value={s.record_id}>
-                {s.group_id} • guardian #{s.guardian_id} • {s.owner_old_npub?.slice(0, 16)}...
-              </option>
-            ))}
-          </select>
-          {!recoveryMode && selectedSetup && !selectedSetup.group_pubkey && (
-            <p className="p-medium" style={{ color: "#ffcc80", marginTop: 6 }}>
-              Selected setup has no group_pubkey. You can send recovery requests, but aggregation/publish will be blocked until group_pubkey is available.
-            </p>
-          )}
+          <input style={{ ...input, opacity: 0.85 }} value={resolvedNewNpub || ""} readOnly placeholder="New npub (current account)" />
+          <input style={{ ...input, opacity: 0.85 }} value={nonce || ""} readOnly placeholder="Nonce (auto-generated on send)" />
+          <input style={input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" />
         </div>
 
         <div style={{ marginTop: 8 }}>
@@ -428,6 +391,9 @@ function KeyRotationDemoPage() {
       <section style={box}>
         <h3 style={h3}>Indexed guardian setups (from DM history)</h3>
         <p className="p-medium">Found: {indexedSetups.length}</p>
+        <p className="p-medium" style={{ opacity: 0.85 }}>
+          Aggregation uses the first setup with group_pubkey: {setupForAggregation?.record_id || "(none)"}
+        </p>
         <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(indexedSetups, null, 2)}</pre>
       </section>
 

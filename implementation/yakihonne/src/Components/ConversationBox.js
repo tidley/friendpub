@@ -450,30 +450,30 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     try {
       const payload = buildGuardianSetupPayload();
       persistGroupPair(payload.group_pubkey);
+
       const payloadText = JSON.stringify(payload);
       devJsonAssert(payloadText, "guardian-setup-send");
+
       setShowProgress(true);
       await sendMessage(convo.pubkey, payloadText);
 
-      // If requester has a guardian share stored for this (group_id, guardian_id), send it now.
-      // This allows fully automatic provisioning: requester -> guardian-share DM -> guardian auto-ingests.
+      // Demo UX: always follow up with a derived guardian-share.
+      // (Previously this only sent a share if one already existed in local storage.)
       try {
-        const shareRaw = getGuardianShareFor({ group_id: payload.group_id, guardian_id: payload.guardian_id });
-        if (shareRaw) {
-          const share = JSON.parse(shareRaw);
-          const shareMsg = {
-            type: "guardian-share",
-            version: 1,
-            group_id: payload.group_id,
-            guardian_id: payload.guardian_id,
-            threshold: payload.threshold,
-            group_pubkey: payload.group_pubkey,
-            share: String(share.share || "").trim(),
-            created_at: Math.floor(Date.now() / 1000),
-          };
-          devJsonAssert(JSON.stringify(shareMsg), "guardian-share-send");
-          await sendMessage(convo.pubkey, JSON.stringify(shareMsg));
-        }
+        const shareMsg = buildGuardianSharePayloadV1({ setupPayload: payload });
+
+        // Also store it locally so this browser can later auto-confirm as that guardian.
+        const map = loadGuardianShareMap();
+        map[shareMapKeyFor(shareMsg.group_id, shareMsg.guardian_id)] = JSON.stringify({
+          id: Number(shareMsg.guardian_id),
+          share: shareMsg.share,
+          threshold: Number(shareMsg.threshold || 2),
+          groupPubkey: shareMsg.group_pubkey,
+        });
+        saveGuardianShareMap(map);
+
+        devJsonAssert(JSON.stringify(shareMsg), "guardian-share-send");
+        await sendMessage(convo.pubkey, JSON.stringify(shareMsg));
       } catch (e2) {
         console.warn("[guardian-share] auto-send failed", e2?.message || e2);
       }
@@ -1296,8 +1296,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                 ) : null}
                 <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem", flexWrap: "wrap" }}>
                   <button className="btn btn-small" type="button" onClick={applyGuardianSetupToComposer}>Fill compose</button>
-                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send setup now</button>
-                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianShareNow}>Send share now</button>
+                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send setup + share</button>
                 </div>
               </div>
             )}
