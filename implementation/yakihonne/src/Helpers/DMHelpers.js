@@ -5,7 +5,7 @@ import {
   nip44,
 } from "nostr-tools";
 import { bytesTohex, encrypt04, encrypt44 } from "./Encryptions";
-import { InitEvent, updateYakiChestStats } from "./Controlers";
+import { InitEvent } from "./Controlers";
 import { NDKEvent, NDKRelaySet } from "@nostr-dev-kit/ndk";
 import { store } from "@/Store/Store";
 import { setToast, setToPublish } from "@/Store/Slides/Publishers";
@@ -13,8 +13,9 @@ import { t } from "i18next";
 import { checkCurrentConvo, getInboxRelaysForUser, removeMessage } from "./DB";
 import { dmRelaysOnPlatform, relaysOnPlatform } from "@/Content/Relays";
 import { getKeys } from "./ClientHelpers";
-import axiosInstance from "./HTTP_Client";
 import { getNDKInstanceForDMs } from "./utils/ndkInstancesForDMsCache";
+import { normalizeRelayList, normalizeRelayUrl } from "./relayUtils";
+import { safeUpdateYakiChest } from "./yakiChest";
 
 export const sendMessage = async (selectedPerson, message, replyOn) => {
   let userKeys = getKeys();
@@ -33,13 +34,11 @@ export const sendMessage = async (selectedPerson, message, replyOn) => {
   let otherPartyRelays = await getInboxRelaysForUser(selectedPerson);
   // For NIP-17 DMs we want at least one NIP-17-capable relay in the mix.
   // We still include user inbox relays and other party inbox relays when available.
-  let relaysToPublish = [
-    ...new Set([
-      ...userInboxRelays,
-      ...(otherPartyRelays.length > 0 ? otherPartyRelays : relaysOnPlatform),
-      ...dmRelaysOnPlatform,
-    ]),
-  ];
+  let relaysToPublish = normalizeRelayList([
+    ...userInboxRelays,
+    ...(otherPartyRelays.length > 0 ? otherPartyRelays : relaysOnPlatform),
+    ...dmRelaysOnPlatform,
+  ]);
 
   if (legacy) {
     let encryptedMessage = await encrypt04(userKeys, selectedPerson, message);
@@ -96,7 +95,7 @@ export const sendMessage = async (selectedPerson, message, replyOn) => {
         "20986fb83e775d96d188ca5c9df10ce6d613e0eb7e5768a0f0b12b37cdac21b3"
           ? "dms-10"
           : "dms-5";
-      updateYakiChest(action_key);
+      safeUpdateYakiChest(action_key);
       return true;
     } else {
       return false;
@@ -253,10 +252,11 @@ const isRetriablePublishError = (err) => {
 
 // Ensure relays are in the pool and connected before publish.
 const buildRelaySetForPublish = (ndk, relayUrls) => {
-  const urls = [...new Set((relayUrls || []).filter(Boolean))];
+  const urls = normalizeRelayList(relayUrls);
   urls.forEach((url) => {
+    const u = normalizeRelayUrl(url);
     // addExplicitRelay is idempotent-ish: pool will keep the first instance per URL.
-    if (!ndk.pool?.relays?.has?.(url)) ndk.addExplicitRelay(url);
+    if (!ndk.pool?.relays?.has?.(u)) ndk.addExplicitRelay(u);
   });
   return NDKRelaySet.fromRelayUrls(urls, ndk, true);
 };
@@ -332,33 +332,6 @@ const initPublishing = async (name, relays, event1, event2) => {
   }
 };
 
-const isYakiChestDisabled = () => {
-  // Client-side feature flag.
-  // - Explicitly disable with NEXT_PUBLIC_DISABLE_YAKI_CHEST=1/true
-  // - Default: disabled in dev, enabled in prod.
-  const raw = process.env.NEXT_PUBLIC_DISABLE_YAKI_CHEST;
-  if (raw !== undefined) return raw === "1" || raw === "true";
-  return process.env.NODE_ENV !== "production";
-};
-
-const updateYakiChest = async (action_key) => {
-  if (isYakiChestDisabled()) return;
-
-  try {
-    let data = await axiosInstance.post("/api/v1/yaki-chest", {
-      action_key,
-    });
-    let { user_stats, is_updated } = data.data;
-
-    if (is_updated) {
-      store.dispatch(setUpdatedActionFromYakiChest(is_updated));
-      updateYakiChestStats(user_stats);
-    }
-  } catch (err) {
-    // Avoid failing core DM sending due to optional stats backend.
-    console.log(err);
-  }
-};
 
 export const handleUpdateConversation = (event) => {
   const userKeys = getKeys();

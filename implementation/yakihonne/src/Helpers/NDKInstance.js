@@ -1,10 +1,11 @@
 import NDK from "@nostr-dev-kit/ndk";
 import NDKCacheAdapterDexie from "@nostr-dev-kit/ndk-cache-dexie";
 import { relaysOnPlatform } from "@/Content/Relays";
+import { normalizeRelayList, normalizeRelayUrl } from "@/Helpers/relayUtils";
 import bannedList from "@/Content/BannedList";
 
 const ndkInstance = new NDK({
-  explicitRelayUrls: relaysOnPlatform,
+  explicitRelayUrls: normalizeRelayList(relaysOnPlatform),
   enableOutboxModel: true,
   muteFilter: (event) => {
     if (bannedList.includes(event.pubkey)) return true;
@@ -26,12 +27,12 @@ export { ndkInstance };
 
 export const addExplicitRelays = (relayList) => {
   try {
-    if (!Array.isArray(relayList)) return;
-    let tempRelayList = relayList.filter(
-      (relay) => !ndkInstance.explicitRelayUrls.includes(`${relay}`),
-    );
-    if (tempRelayList.length === 0) return;
-    for (let relay of tempRelayList) {
+    const normalized = normalizeRelayList(relayList);
+    if (!normalized.length) return;
+    const existing = new Set((ndkInstance.explicitRelayUrls || []).map(normalizeRelayUrl));
+    const toAdd = normalized.filter((r) => !existing.has(r));
+    if (!toAdd.length) return;
+    for (let relay of toAdd) {
       ndkInstance.addExplicitRelay(relay, undefined, true);
     }
   } catch (err) {

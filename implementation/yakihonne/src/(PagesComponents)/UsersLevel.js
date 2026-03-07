@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import ArrowUp from "@/Components/ArrowUp";
 import axiosInstance from "@/Helpers/HTTP_Client";
+import { safeFetchYakiChestStats } from "@/Helpers/yakiChest";
 import ProgressBar from "@/Components/ProgressBar";
 import UserProfilePic from "@/Components/UserProfilePic";
 import { chartActionKeys } from "@/Content/ActionKeys";
@@ -93,13 +94,18 @@ export default function UserLevels() {
     const fetchData = async () => {
       try {
         setIsLoaded(false);
-        const data = await axiosInstance.get("/api/v1/yaki-chest/stats");
-        if (data.data.user_stats.pubkey !== userKeys.pub) {
+        const data = await safeFetchYakiChestStats();
+        if (!data?.user_stats) {
+          // Feature disabled or backend unavailable.
+          setIsLoaded(true);
+          return;
+        }
+        if (data.user_stats.pubkey !== userKeys.pub) {
           userLogout();
           setIsLoaded(false);
           return;
         }
-        let { user_stats, platform_standards, tiers } = data.data;
+        let { user_stats, platform_standards, tiers } = data;
         let xp = user_stats.xp;
         let currentLevel = getCurrentLevel(xp);
         let nextLevel = currentLevel + 1;

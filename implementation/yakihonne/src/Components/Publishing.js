@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import LoadingDots from "@/Components/LoadingDots";
 import axiosInstance from "@/Helpers/HTTP_Client";
+import { safeUpdateYakiChest } from "@/Helpers/yakiChest";
+import { normalizeRelayUrl } from "@/Helpers/relayUtils";
 import { useDispatch, useSelector } from "react-redux";
 import { updateYakiChestStats } from "@/Helpers/Controlers";
 import { setToast, setToPublish } from "@/Store/Slides/Publishers";
@@ -332,7 +334,15 @@ export default function Publishing({ displayOff = false }) {
       }
 
       for (let i = 0; i < relays.length; i++) {
-        let relay = ndkInstance.pool.getRelay(relays[i].url);
+        const url = normalizeRelayUrl(relays[i].url);
+
+        // Ensure relay exists in pool before we call getRelay(url)
+        // (avoids "relay not found in pool" when URLs differ by slash/whitespace).
+        if (url && !ndkInstance.pool?.relays?.has?.(url)) {
+          ndkInstance.addExplicitRelay(url, undefined, true);
+        }
+
+        let relay = ndkInstance.pool.getRelay(url);
         handlePublishEvent(relay, event, index);
       }
     } catch (err) {
@@ -373,36 +383,7 @@ export default function Publishing({ displayOff = false }) {
     initPublishing(relays, ndkEvent, index);
   };
   const updateYakiChest = async (action_key) => {
-    try {
-      if (!action_key) return;
-      if (Array.isArray(action_key)) {
-        for (let action_key_ of action_key) {
-          let data = await axiosInstance.post("/api/v1/yaki-chest", {
-            action_key: action_key_,
-          });
-          let { user_stats, is_updated } = data.data;
-
-          if (is_updated) {
-            setUpdatedActionFromYakiChest(is_updated);
-            updateYakiChestStats(user_stats);
-          }
-        }
-        return;
-      }
-      if (typeof action_key === "string") {
-        let data = await axiosInstance.post("/api/v1/yaki-chest", {
-          action_key,
-        });
-        let { user_stats, is_updated } = data.data;
-
-        if (is_updated) {
-          setUpdatedActionFromYakiChest(is_updated);
-          updateYakiChestStats(user_stats);
-        }
-      }
-    } catch (err) {
-      // console.log(err);
-    }
+    await safeUpdateYakiChest(action_key);
   };
   const getActionKey = () => {
     let { kind, content, tags, eventInitEx } = toPublish;

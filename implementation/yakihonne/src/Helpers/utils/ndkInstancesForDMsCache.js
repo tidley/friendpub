@@ -5,6 +5,7 @@ import NDK, {
   NDKRelayAuthPolicies,
 } from "@nostr-dev-kit/ndk";
 import { getKeys } from "@/Helpers/ClientHelpers";
+import { normalizeRelayList } from "@/Helpers/relayUtils";
 
 const ndkInstancesForDMsCache = new Map();
 
@@ -21,8 +22,9 @@ export function setNDKInstanceForDMs(key, instance) {
 
 const initiateNDKInstanceForDMs = async (key, relays) => {
   let userKeys = getKeys();
+  const normalizedRelays = normalizeRelayList(relays);
   const ndkInstance = new NDK({
-    explicitRelayUrls: relays,
+    explicitRelayUrls: normalizedRelays,
   });
 
   if (userKeys?.ext) {

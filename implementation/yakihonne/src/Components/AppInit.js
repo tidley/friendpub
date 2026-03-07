@@ -104,6 +104,7 @@ import {
   unwrapGiftWrap,
 } from "@/Helpers/Encryptions";
 import axiosInstance from "@/Helpers/HTTP_Client";
+import { safeFetchYakiChestStats } from "@/Helpers/yakiChest";
 import {
   setIsConnectedToYaki,
   setIsYakiChestLoaded,
@@ -1003,15 +1004,19 @@ export default function AppInit() {
     const fetchData = async () => {
       try {
         dispatch(setIsYakiChestLoaded(false));
-        const data = await axiosInstance.get("/api/v1/yaki-chest/stats");
-        if (data.data.user_stats.pubkey !== userKeys.pub) {
+        const yc = await safeFetchYakiChestStats();
+        if (!yc?.user_stats) {
+          // Feature disabled or backend missing; treat as loaded.
+          dispatch(setIsYakiChestLoaded(true));
+          return;
+        }
+        if (yc.user_stats.pubkey !== userKeys.pub) {
           userLogout();
           localStorage.removeItem("connect_yc");
           dispatch(setIsYakiChestLoaded(true));
           return;
         }
-        let { user_stats } = data.data;
-        updateYakiChestStats(user_stats);
+        updateYakiChestStats(yc.user_stats);
         dispatch(setIsYakiChestLoaded(true));
       } catch (err) {
         console.log(err);
