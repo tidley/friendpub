@@ -39,6 +39,7 @@ function KeyRotationDemoPage() {
   // - no setup dropdown
   const [oldNpub, setOldNpub] = useState("");
   const [nonce, setNonce] = useState("");
+  const [reqId, setReqId] = useState("");
   const [reason, setReason] = useState("key compromise");
   const [guardiansRows, setGuardiansRows] = useState(emptyGuardians);
   const [sending, setSending] = useState(false);
@@ -77,6 +78,7 @@ function KeyRotationDemoPage() {
       const s = JSON.parse(raw);
       setOldNpub(s.oldNpub || "");
       setNonce(s.nonce || "");
+      setReqId(s.reqId || "");
       setReason(s.reason || "key compromise");
       setGuardiansRows(
         Array.isArray(s.guardiansRows) && s.guardiansRows.length === 3
@@ -100,6 +102,7 @@ function KeyRotationDemoPage() {
         JSON.stringify({
           oldNpub,
           nonce,
+          reqId,
           reason,
           guardiansRows,
         }),
@@ -109,7 +112,7 @@ function KeyRotationDemoPage() {
       // eslint-disable-next-line no-console
       console.warn("[key-rotation-demo] localStorage persist failed", e?.message || e);
     }
-  }, [oldNpub, nonce, reason, guardiansRows]);
+  }, [oldNpub, nonce, reqId, reason, guardiansRows]);
 
   const updateGuardianCell = (idx, key, value) => {
     setGuardiansRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
@@ -117,6 +120,7 @@ function KeyRotationDemoPage() {
 
   const collectPartials = () => {
     const reqNonce = nonce.trim();
+    const reqIdFilter = reqId.trim();
     const reqNew = resolvedNewNpub;
     const rows = [];
 
@@ -124,7 +128,12 @@ function KeyRotationDemoPage() {
       for (const msg of room.convo || []) {
         const raw = msg.raw_content || msg.content;
         const v2 = parseRotationAttestationV2(raw);
-        if (v2 && (!reqNew || v2.new_npub === reqNew) && (!reqNonce || v2.nonce === reqNonce)) {
+        if (
+          v2 &&
+          (!reqNew || v2.new_npub === reqNew) &&
+          (!reqNonce || v2.nonce === reqNonce) &&
+          (!reqIdFilter || String(v2.req_id || "").trim() === reqIdFilter)
+        ) {
           rows.push({
             from: room.pubkey,
             created_at: msg.created_at || 0,
@@ -263,7 +272,15 @@ function KeyRotationDemoPage() {
       setSending(true);
       setSendResult("");
 
+      if (nonce.trim() || reqId.trim()) {
+        const ok = window.confirm(
+          "A rotation request is already staged (nonce/req_id set). Send a NEW request and replace them?",
+        );
+        if (!ok) return;
+      }
+
       const reqNonce = crypto.randomUUID();
+      const reqIdForBatch = crypto.randomUUID();
       if (!resolvedNewNpub) throw new Error("Login required (new npub is current account)");
       if (!oldNpub.trim()) throw new Error("old npub required (recovery mode)");
 
@@ -279,6 +296,10 @@ function KeyRotationDemoPage() {
         );
       }
 
+      // Persist identity up-front so collect/aggregate uses the same.
+      setNonce(reqNonce);
+      setReqId(reqIdForBatch);
+
       let okCount = 0;
       // Demo path: use guardians 1 and 2 as the signing set.
       for (let i = 0; i < Math.min(2, guardiansRows.length); i++) {
@@ -288,7 +309,7 @@ function KeyRotationDemoPage() {
         const decoded = nip19.decode(row.npub.trim());
         if (decoded.type !== "npub") continue;
 
-        const reqId = crypto.randomUUID();
+        const reqId = reqIdForBatch;
         const guardian_id = i + 1;
         const oldNpubForReq = oldNpub.trim();
         const groupIdForReq = "";
@@ -324,8 +345,7 @@ function KeyRotationDemoPage() {
         if (ok) okCount++;
       }
 
-      setNonce(reqNonce);
-      setSendResult(`sent ${okCount} rotation-request v2 DM(s)`);
+      setSendResult(`sent ${okCount} rotation-request v2 DM(s) (req_id ${reqIdForBatch.slice(0, 8)}…)`);
     } catch (e) {
       setSendResult(`send failed: ${e.message}`);
     } finally {
@@ -350,8 +370,24 @@ function KeyRotationDemoPage() {
             onChange={(e) => setOldNpub(e.target.value)}
             placeholder="Old npub (required)"
           />
-          <input style={{ ...input, opacity: 0.85 }} value={resolvedNewNpub || ""} readOnly placeholder="New npub (current account)" />
-          <input style={{ ...input, opacity: 0.85 }} value={nonce || ""} readOnly placeholder="Nonce (auto-generated on send)" />
+          <input
+            style={{ ...input, opacity: 0.85 }}
+            value={resolvedNewNpub || ""}
+            readOnly
+            placeholder="New npub (current account)"
+          />
+          <input
+            style={{ ...input, opacity: 0.85 }}
+            value={nonce || ""}
+            readOnly
+            placeholder="Nonce (auto-generated on send)"
+          />
+          <input
+            style={{ ...input, opacity: 0.85 }}
+            value={reqId || ""}
+            readOnly
+            placeholder="Request id (auto-generated on send)"
+          />
           <input style={input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" />
         </div>
 
