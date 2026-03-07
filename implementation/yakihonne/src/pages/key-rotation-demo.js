@@ -10,6 +10,7 @@ import {
   parseRotationPartial,
   verifyRotationProof,
 } from "@/Helpers/RotationProof";
+import { computeDeterministicGroupId } from "@/Helpers/GuardianGroupId";
 import { InitEvent } from "@/Helpers/Controlers";
 import { setToPublish } from "@/Store/Slides/Publishers";
 import { dmRelaysOnPlatform, relaysOnPlatform } from "@/Content/Relays";
@@ -21,11 +22,11 @@ import {
 const ROTATION_PROOF_KIND = 39093;
 const DEMO_STATE_KEY = "rotation-demo-v2-state";
 
-const emptyGuardians = [
-  { npub: "", secret: "" },
-  { npub: "", secret: "" },
-  { npub: "", secret: "" },
-];
+const makeEmptyGuardians = (n = 3) =>
+  Array.from({ length: Math.max(1, Number(n) || 1) }, () => ({ npub: "", secret: "" }));
+
+const DEFAULT_GUARDIAN_COUNT = 3;
+const DEFAULT_THRESHOLD = 2;
 
 function KeyRotationDemoPage() {
   const dispatch = useDispatch();
@@ -41,7 +42,13 @@ function KeyRotationDemoPage() {
   const [nonce, setNonce] = useState("");
   const [reqId, setReqId] = useState("");
   const [reason, setReason] = useState("key compromise");
-  const [guardiansRows, setGuardiansRows] = useState(emptyGuardians);
+
+  // Guardian setup (deterministic group_id)
+  const [guardianCount, setGuardianCount] = useState(DEFAULT_GUARDIAN_COUNT);
+  const [threshold, setThreshold] = useState(DEFAULT_THRESHOLD);
+
+  // Guardians (npub + secret used for demo DM flow)
+  const [guardiansRows, setGuardiansRows] = useState(makeEmptyGuardians(DEFAULT_GUARDIAN_COUNT));
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState("");
   const [partialRows, setPartialRows] = useState([]);
@@ -60,15 +67,15 @@ function KeyRotationDemoPage() {
     return getActiveGuardianSetups();
   }, [userChatrooms]);
 
-  // For aggregation/publish, we still need a group_pubkey. With the setup dropdown removed,
-  // use the first setup that has a group_pubkey.
+  // For aggregation/publish, we still need a group_pubkey.
+  // Prefer a setup matching the *current deterministic group_id*.
   const setupForAggregation = useMemo(() => {
-    return (
-      indexedSetups.find((s) => s?.group_pubkey) ||
-      indexedSetups[0] ||
-      null
-    );
-  }, [indexedSetups]);
+    if (computedGroupId) {
+      const match = indexedSetups.find((s) => s?.group_id === computedGroupId && s?.group_pubkey);
+      if (match) return match;
+    }
+    return indexedSetups.find((s) => s?.group_pubkey) || indexedSetups[0] || null;
+  }, [indexedSetups, computedGroupId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -80,11 +87,16 @@ function KeyRotationDemoPage() {
       setNonce(s.nonce || "");
       setReqId(s.reqId || "");
       setReason(s.reason || "key compromise");
-      setGuardiansRows(
-        Array.isArray(s.guardiansRows) && s.guardiansRows.length === 3
-          ? s.guardiansRows
-          : emptyGuardians,
-      );
+      const restoredCount = Number(s.guardianCount || DEFAULT_GUARDIAN_COUNT);
+      const restoredThreshold = Number(s.threshold || DEFAULT_THRESHOLD);
+      setGuardianCount(Number.isFinite(restoredCount) ? restoredCount : DEFAULT_GUARDIAN_COUNT);
+      setThreshold(Number.isFinite(restoredThreshold) ? restoredThreshold : DEFAULT_THRESHOLD);
+
+      if (Array.isArray(s.guardiansRows) && s.guardiansRows.length) {
+        setGuardiansRows(s.guardiansRows);
+      } else {
+        setGuardiansRows(makeEmptyGuardians(restoredCount || DEFAULT_GUARDIAN_COUNT));
+      }
       // NOTE: do NOT restore large arrays/objects from localStorage (quota risk)
       // partialRows + proofPayload are intentionally not persisted.
       setPartialRows([]);
@@ -104,6 +116,8 @@ function KeyRotationDemoPage() {
           nonce,
           reqId,
           reason,
+          guardianCount,
+          threshold,
           guardiansRows,
         }),
       );
@@ -112,11 +126,37 @@ function KeyRotationDemoPage() {
       // eslint-disable-next-line no-console
       console.warn("[key-rotation-demo] localStorage persist failed", e?.message || e);
     }
-  }, [oldNpub, nonce, reqId, reason, guardiansRows]);
+  }, [oldNpub, nonce, reqId, reason, guardianCount, threshold, guardiansRows]);
 
   const updateGuardianCell = (idx, key, value) => {
     setGuardiansRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
   };
+
+  useEffect(() => {
+    // Resize guardian rows to match guardianCount, preserving existing entries.
+    setGuardiansRows((prev) => {
+      const n = Math.max(1, Number(guardianCount) || 1);
+      const next = prev.slice(0, n);
+      while (next.length < n) next.push({ npub: "", secret: "" });
+      return next;
+    });
+
+    // Clamp threshold into [1, guardianCount]
+    setThreshold((prev) => {
+      const n = Math.max(1, Number(guardianCount) || 1);
+      const t = Number(prev);
+      if (!Number.isFinite(t) || t < 1) return 1;
+      if (t > n) return n;
+      return Math.floor(t);
+    });
+  }, [guardianCount]);
+
+  const computedGroupId = useMemo(() => {
+    return computeDeterministicGroupId({
+      threshold,
+      guardian_npubs: guardiansRows.map((r) => r.npub),
+    });
+  }, [threshold, guardiansRows]);
 
   const collectPartials = () => {
     const reqNonce = nonce.trim();
@@ -185,8 +225,7 @@ function KeyRotationDemoPage() {
           "group_pubkey missing (no indexed guardian-setup with group_pubkey). Aggregation requires group_pubkey.",
         );
 
-      const derivedGroupId =
-        setup?.group_id || partialRows.find((r) => r.group_id)?.group_id || "";
+      const derivedGroupId = computedGroupId || setup?.group_id || partialRows.find((r) => r.group_id)?.group_id || "";
 
       const req = {
         old_npub: oldNpub.trim() || setup.owner_old_npub || partialRows.find((r) => r.old_npub)?.old_npub,
@@ -232,7 +271,7 @@ function KeyRotationDemoPage() {
         nonce: req.nonce,
         group_id: derivedGroupId,
         guardian_set_hash: derivedGroupId ? `g-${derivedGroupId}` : "",
-        threshold: 2,
+        threshold: Number(threshold) || 2,
         group_pubkey: setup.group_pubkey,
         participants: picked.map((p) => p.id),
         signature,
@@ -301,8 +340,10 @@ function KeyRotationDemoPage() {
       setReqId(reqIdForBatch);
 
       let okCount = 0;
-      // Demo path: use guardians 1 and 2 as the signing set.
-      for (let i = 0; i < Math.min(2, guardiansRows.length); i++) {
+      const participant_ids = Array.from({ length: guardiansRows.length }, (_, i) => i + 1);
+      const groupIdForReq = computedGroupId;
+
+      for (let i = 0; i < guardiansRows.length; i++) {
         const row = guardiansRows[i];
         if (!row.npub?.trim()) continue;
         if (!row.secret?.trim()) throw new Error(`guardian #${i + 1} secret required`);
@@ -312,16 +353,14 @@ function KeyRotationDemoPage() {
         const reqId = reqIdForBatch;
         const guardian_id = i + 1;
         const oldNpubForReq = oldNpub.trim();
-        const groupIdForReq = "";
 
         const payload = {
           type: "rotation-request",
           version: 2,
           req_id: reqId,
-          group_id: null,
+          group_id: groupIdForReq || "",
           guardian_id,
-          // signer set for this request (keeps math consistent for 2-of-2 demo path)
-          participant_ids: [1, 2],
+          participant_ids,
           claimed_name: "",
           old_npub: oldNpubForReq,
           old_npub_hint: oldNpubForReq,
@@ -331,7 +370,7 @@ function KeyRotationDemoPage() {
             sharedSecret: row.secret.trim(),
             req_id: reqId,
             nonce: reqNonce,
-            group_id: groupIdForReq,
+            group_id: groupIdForReq || "",
             old_npub: oldNpubForReq,
             guardian_id,
           }),
@@ -359,6 +398,81 @@ function KeyRotationDemoPage() {
       <p style={{ opacity: 0.8, marginTop: 0 }}>
         Simplified requester UX: recovery mode only. New npub is always your current account.
       </p>
+
+      <section style={box}>
+        <h3 style={h3}>Guardian setup (deterministic group_id)</h3>
+
+        <div style={{ ...grid, gridTemplateColumns: "1fr 1fr" }}>
+          <label style={label}>
+            Guardian count (N)
+            <input
+              style={{ ...input, width: "100%" }}
+              type="number"
+              min={1}
+              max={12}
+              step={1}
+              value={guardianCount}
+              onChange={(e) => setGuardianCount(Number(e.target.value || 1))}
+            />
+          </label>
+          <label style={label}>
+            Threshold (t-of-N)
+            <input
+              style={{ ...input, width: "100%" }}
+              type="number"
+              min={1}
+              max={Math.max(1, Number(guardianCount) || 1)}
+              step={1}
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value || 1))}
+            />
+          </label>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <p className="p-medium" style={{ marginBottom: 6 }}>Guardian npubs</p>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={th}>Guardian #</th>
+                <th style={th}>npub</th>
+              </tr>
+            </thead>
+            <tbody>
+              {guardiansRows.map((row, i) => (
+                <tr key={i}>
+                  <td style={td}>{i + 1}</td>
+                  <td style={td}>
+                    <input
+                      style={{ ...input, width: "100%" }}
+                      value={row.npub}
+                      onChange={(e) => updateGuardianCell(i, "npub", e.target.value)}
+                      placeholder={`Guardian ${i + 1} npub`}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <label style={label}>
+            Computed group_id
+            <input
+              style={{ ...input, width: "100%", opacity: 0.9 }}
+              value={computedGroupId || ""}
+              readOnly
+              placeholder="group_id will appear when threshold + all npubs are valid"
+            />
+          </label>
+          {!computedGroupId && (
+            <p className="p-medium" style={{ marginTop: 6, opacity: 0.75 }}>
+              Enter {guardianCount} guardian npubs and a valid threshold to derive a stable group_id.
+            </p>
+          )}
+        </div>
+      </section>
 
       <section style={box}>
         <h3 style={h3}>Requester mode (send rotation request v2)</h3>
@@ -462,6 +576,7 @@ const box = { border: "1px solid #30487f", borderRadius: 12, background: "#0f1d3
 const h3 = { margin: "0 0 8px 0" };
 const grid = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 };
 const input = { border: "1px solid #3a4c7b", borderRadius: 8, background: "#0c1630", color: "#e7ebff", padding: 8 };
+const label = { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, opacity: 0.9 };
 const btn = { border: "1px solid #3a66cb", borderRadius: 8, background: "#19336f", color: "#fff", padding: "8px 12px", cursor: "pointer" };
 const th = { textAlign: "left", borderBottom: "1px solid #30487f", padding: "6px" };
 const td = { padding: "6px", verticalAlign: "top" };
