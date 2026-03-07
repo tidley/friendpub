@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@cashu/cashu-ts": "^3.2.2",
@@ -83,9 +85,11 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.58.2",
     "assert": "^2.1.0",
     "buffer": "^6.0.3",
     "eslint": "^9",
+    "playwright": "^1.55.0",
     "process": "^0.11.10",
     "vitest": "^2.1.9"
   }

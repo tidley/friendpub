@@ -18,6 +18,19 @@ import { normalizeRelayList, normalizeRelayUrl } from "./relayUtils";
 import { safeUpdateYakiChest } from "./yakiChest";
 
 export const sendMessage = async (selectedPerson, message, replyOn) => {
+  // E2E testing hook: allow Playwright to stub DM send without touching real relays.
+  // Enabled only when NEXT_PUBLIC_E2E=1.
+  try {
+    if (
+      typeof window !== "undefined" &&
+      process.env.NEXT_PUBLIC_E2E === "1" &&
+      window.__friendpubTest?.dm?.sendMessage
+    ) {
+      return await window.__friendpubTest.dm.sendMessage(selectedPerson, message, replyOn);
+    }
+  } catch {
+    // ignore
+  }
   let userKeys = getKeys();
   let legacy =
     userKeys?.sec || window?.nostr?.nip44
@@ -262,6 +275,21 @@ const buildRelaySetForPublish = (ndk, relayUrls) => {
 };
 
 export const preflightDMRelayConnection = async (name, relays) => {
+  // E2E testing hook: skip relay pool connection checks.
+  try {
+    if (
+      typeof window !== "undefined" &&
+      process.env.NEXT_PUBLIC_E2E === "1" &&
+      window.__friendpubTest?.dm?.preflightDMRelayConnection
+    ) {
+      return await window.__friendpubTest.dm.preflightDMRelayConnection(name, relays);
+    }
+    if (typeof window !== "undefined" && process.env.NEXT_PUBLIC_E2E === "1") {
+      return 1;
+    }
+  } catch {
+    // ignore
+  }
   const ndkInstanceForDM = await getNDKInstanceForDMs(name, relays);
   buildRelaySetForPublish(ndkInstanceForDM, relays);
   const connected = ndkInstanceForDM.pool?.connectedRelays?.() || [];

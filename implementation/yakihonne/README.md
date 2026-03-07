@@ -212,3 +212,16 @@ Troubleshooting:
 - Rotation proof publish kind was moved to avoid collisions: `ROTATION_PROOF_KIND = 39093`.
 - Lint may currently fail due to upstream Next lint config issues; `pnpm build` should still work.
 
+## E2E tests (Playwright)
+
+A minimal happy-path Playwright test exists for the key rotation demo and is designed to run **without live relays**.
+
+```bash
+pnpm install
+pnpm test:e2e
+```
+
+Notes:
+- The Playwright config starts `pnpm dev` on `http://localhost:3400` with `NEXT_PUBLIC_E2E=1`.
+- In E2E mode, DMs are stub-able (no relay network) and a small `window.__friendpubTest` hook is exposed for seeding `rotation-attestation` messages into redux.
+

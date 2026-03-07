@@ -14,6 +14,7 @@ import { computeDeterministicGroupId } from "@/Helpers/GuardianGroupId";
 import { InitEvent } from "@/Helpers/Controlers";
 import { setToPublish } from "@/Store/Slides/Publishers";
 import { dmRelaysOnPlatform, relaysOnPlatform } from "@/Content/Relays";
+import { setUserChatrooms, setUserKeys } from "@/Store/Slides/UserData";
 import {
   getActiveGuardianSetups,
   ingestGuardianSetupsFromChatrooms,
@@ -66,6 +67,13 @@ function KeyRotationDemoPage() {
     ingestGuardianSetupsFromChatrooms(userChatrooms || []);
     return getActiveGuardianSetups();
   }, [userChatrooms]);
+
+  const computedGroupId = useMemo(() => {
+    return computeDeterministicGroupId({
+      threshold,
+      guardian_npubs: guardiansRows.map((r) => r.npub),
+    });
+  }, [threshold, guardiansRows]);
 
   // For aggregation/publish, we still need a group_pubkey.
   // Prefer a setup matching the *current deterministic group_id*.
@@ -151,12 +159,40 @@ function KeyRotationDemoPage() {
     });
   }, [guardianCount]);
 
-  const computedGroupId = useMemo(() => {
-    return computeDeterministicGroupId({
-      threshold,
-      guardian_npubs: guardiansRows.map((r) => r.npub),
-    });
-  }, [threshold, guardiansRows]);
+  // Playwright/E2E helpers (test-only): seed redux state without relying on live relays.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const isE2E = Boolean(window.__PLAYWRIGHT__) || process.env.NEXT_PUBLIC_E2E === "1";
+    if (!isE2E) return;
+
+    window.__yakihonneTest = window.__yakihonneTest || {};
+
+    window.__yakihonneTest.setUserKeys = (keys) => dispatch(setUserKeys(keys));
+    window.__yakihonneTest.setUserChatrooms = (rooms) => dispatch(setUserChatrooms(rooms));
+
+    // Seed rotation-attestation v2 messages into userChatrooms.
+    // attestations: [{ from_pubkey: string, raw: string, created_at?: number }]
+    window.__yakihonneTest.seedRotationAttestationsV2 = ({ attestations }) => {
+      const now = Math.floor(Date.now() / 1000);
+      const msgs = Array.isArray(attestations) ? attestations : [];
+      const nextRooms = msgs.map((a) => ({
+        pubkey: String(a?.from_pubkey || "").trim() || "test-guardian",
+        convo: [
+          {
+            id: `${String(a?.from_pubkey || "g").slice(0, 12)}:${a?.created_at || now}`,
+            created_at: Number(a?.created_at || now),
+            raw_content: String(a?.raw || ""),
+            content: String(a?.raw || ""),
+          },
+        ],
+      }));
+      dispatch(setUserChatrooms(nextRooms));
+      return { rooms: nextRooms.length };
+    };
+
+    window.__yakihonneTest.getDemoIds = () => ({ nonce, reqId, computedGroupId });
+  }, [dispatch, nonce, reqId, computedGroupId]);
 
   const collectPartials = () => {
     const reqNonce = nonce.trim();
@@ -323,6 +359,18 @@ function KeyRotationDemoPage() {
       if (!resolvedNewNpub) throw new Error("Login required (new npub is current account)");
       if (!oldNpub.trim()) throw new Error("old npub required (recovery mode)");
 
+      const isE2E = (typeof window !== "undefined" && Boolean(window.__PLAYWRIGHT__)) || process.env.NEXT_PUBLIC_E2E === "1";
+
+      // Persist identity up-front so collect/aggregate uses the same.
+      setNonce(reqNonce);
+      setReqId(reqIdForBatch);
+
+      if (isE2E) {
+        // E2E mode: don't depend on live relays.
+        setSendResult(`e2e: staged rotation-request v2 (req_id ${reqIdForBatch.slice(0, 8)}…)`);
+        return;
+      }
+
       // Preflight: ensure we have at least one DM relay connected before attempting N sends.
       const preflightRelays = [...new Set([...(userInboxRelays || []), ...dmRelaysOnPlatform, ...relaysOnPlatform])];
       const connectedCount = await preflightDMRelayConnection(
@@ -334,10 +382,6 @@ function KeyRotationDemoPage() {
           "No DM relays connected (preflight failed). Set NEXT_PUBLIC_DM_RELAYS to working NIP-17 relays and retry.",
         );
       }
-
-      // Persist identity up-front so collect/aggregate uses the same.
-      setNonce(reqNonce);
-      setReqId(reqIdForBatch);
 
       let okCount = 0;
       const participant_ids = Array.from({ length: guardiansRows.length }, (_, i) => i + 1);
