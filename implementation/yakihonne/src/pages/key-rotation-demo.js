@@ -18,6 +18,12 @@ import {
   getActiveGuardianSetups,
   ingestGuardianSetupsFromChatrooms,
 } from "@/Helpers/GuardianSetupIndex";
+import {
+  dealerSplitSecret2of3,
+  deriveCompressedPubkeyHex,
+  getRandomPrivateKeyBytes,
+} from "@/Helpers/GuardianGroup";
+import { buildGuardianSetupRecordId } from "@/Helpers/RotationProof";
 
 const ROTATION_PROOF_KIND = 39093;
 const DEMO_STATE_KEY = "rotation-demo-v2-state";
@@ -307,6 +313,106 @@ function KeyRotationDemoPage() {
     }
   };
 
+  const sendGuardianSetupViaDM = async () => {
+    try {
+      setSending(true);
+      setSendResult("");
+
+      const isE2E = (typeof window !== "undefined" && Boolean(window.__PLAYWRIGHT__)) || process.env.NEXT_PUBLIC_E2E === "1";
+      if (isE2E) {
+        setSendResult("e2e: setup DM send skipped");
+        return;
+      }
+
+      if (!oldNpub.trim()) throw new Error("old npub required (used as owner_old_npub)");
+      if (!computedGroupId) throw new Error("computed group_id is empty (check threshold + guardian npubs)");
+
+      // Limitations: demo-only setup generator currently supports 2-of-3.
+      if (Number(guardianCount) !== 3 || Number(threshold) !== 2) {
+        throw new Error("setup DM generator currently supports threshold=2 and guardianCount=3 only");
+      }
+
+      const validGuardians = guardiansRows
+        .map((r) => (r?.npub || "").trim())
+        .filter(Boolean)
+        .map((npub) => {
+          const decoded = nip19.decode(npub);
+          if (decoded.type !== "npub") return null;
+          return { npub, pubhex: decoded.data };
+        })
+        .filter(Boolean);
+
+      if (validGuardians.length !== 3) throw new Error("need 3 valid guardian npubs");
+
+      const preflightRelays = [...new Set([...(userInboxRelays || []), ...dmRelaysOnPlatform, ...relaysOnPlatform])];
+      const connectedCount = await preflightDMRelayConnection(
+        `rotation-demo-setup:${userKeys?.pub || "anon"}`,
+        preflightRelays,
+      );
+      if (!connectedCount) throw new Error("No DM relays connected (preflight failed)");
+
+      // Generate a group key + 2-of-3 shares (demo dealer). Group ID remains deterministic from input npubs.
+      const groupSecretBytes = getRandomPrivateKeyBytes();
+      const group_pubkey = deriveCompressedPubkeyHex(groupSecretBytes);
+      const groupSecretHex = Array.from(groupSecretBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const split = dealerSplitSecret2of3({
+        groupSecretHex,
+        participantIds: [1, 2, 3],
+        threshold: 2,
+      });
+
+      let okCount = 0;
+      const now = Math.floor(Date.now() / 1000);
+      const participant_ids = [1, 2, 3];
+
+      for (let i = 0; i < validGuardians.length; i++) {
+        const guardian_id = i + 1;
+        const g = validGuardians[i];
+        const shareRow = (split?.shares || []).find((s) => Number(s.id) === guardian_id);
+        if (!shareRow?.share) throw new Error(`missing share for guardian_id=${guardian_id}`);
+
+        const setup = {
+          type: "guardian-setup",
+          version: 1,
+          record_id: buildGuardianSetupRecordId({ group_id: computedGroupId, guardian_id, owner_old_npub: oldNpub.trim() }),
+          group_id: computedGroupId,
+          guardian_id,
+          threshold: 2,
+          guardian_count: 3,
+          owner_old_npub: oldNpub.trim(),
+          guardian_npub: g.npub,
+          group_pubkey,
+          participant_ids,
+          created_at: now,
+          updated_at: now,
+          status: "active",
+        };
+
+        const shareMsg = {
+          type: "guardian-share",
+          version: 1,
+          group_id: computedGroupId,
+          guardian_id,
+          threshold: 2,
+          group_pubkey,
+          share: shareRow.share,
+          created_at: now,
+        };
+
+        const ok1 = await sendMessage(g.pubhex, JSON.stringify(setup));
+        const ok2 = await sendMessage(g.pubhex, JSON.stringify(shareMsg));
+        if (ok1) okCount++;
+        if (ok2) okCount++;
+      }
+
+      setSendResult(`sent ${okCount} setup/share DM(s) for group_id ${computedGroupId.slice(0, 12)}…`);
+    } catch (e) {
+      setSendResult(`setup send failed: ${e.message}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
   const sendRotationRequest = async () => {
     try {
       setSending(true);
@@ -480,6 +586,21 @@ function KeyRotationDemoPage() {
               Enter {guardianCount} guardian npubs and a valid threshold to derive a stable group_id.
             </p>
           )}
+        </div>
+
+        <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            className="btn btn-small"
+            type="button"
+            onClick={sendGuardianSetupViaDM}
+            disabled={sending}
+            title="Sends guardian-setup + guardian-share via NIP-17 DM (demo-only)"
+          >
+            Send setup via DM
+          </button>
+          <span style={{ opacity: 0.75, fontSize: 12 }}>
+            Demo-only: currently supports 2-of-3 and sends each guardian their share.
+          </span>
         </div>
       </section>
 
