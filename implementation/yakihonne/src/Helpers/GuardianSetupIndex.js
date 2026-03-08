@@ -5,6 +5,7 @@ import {
 } from "@/Helpers/RotationProof";
 
 const STORAGE_KEY = "guardian-setup-index-v1";
+const GUARDIAN_SHARE_MAP_KEY = "guardian-share-map-v1";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -99,6 +100,33 @@ export const saveGuardianSetupIndex = (index) => {
 
 const messageIdFor = (msg) => msg?.giftWrapId || msg?.id || `${msg?.created_at || 0}:${msg?.pubkey || ""}`;
 
+const safePersistEmbeddedShare = (raw, setup) => {
+  try {
+    if (typeof window === "undefined") return;
+    if (!setup?.group_id || !setup?.guardian_id || !setup?.group_pubkey) return;
+
+    const j = typeof raw === "string" ? safeJSON(raw, null) : raw;
+    const share = (j?.share || "").trim();
+    if (!share) return;
+
+    const key = `${setup.group_id}:${Number(setup.guardian_id)}`;
+    const mapRaw = localStorage.getItem(GUARDIAN_SHARE_MAP_KEY);
+    const map = mapRaw ? safeJSON(mapRaw, {}) : {};
+
+    map[key] = JSON.stringify({
+      id: Number(setup.guardian_id),
+      share,
+      threshold: Number(setup.threshold || 2),
+      groupPubkey: setup.group_pubkey,
+    });
+
+    localStorage.setItem(GUARDIAN_SHARE_MAP_KEY, JSON.stringify(map));
+  } catch (e) {
+    // non-fatal; demo UX only
+    console.warn("[guardian-share] embedded share persist failed", e?.message || e);
+  }
+};
+
 const applySetup = (index, setup, sourceMsg) => {
   const existing = index.byRecordId[setup.record_id];
   const incomingTs = Number(setup.updated_at || setup.created_at || sourceMsg?.created_at || nowSec());
@@ -151,7 +179,11 @@ export const ingestGuardianSetupsFromChatrooms = (chatrooms = []) => {
       if (looksLikeUpdate && !update) {
         console.warn("[guardian-setup-index] setup-update message not indexed", { msgId, room: room?.pubkey });
       }
-      if (setup) applySetup(index, setup, msg);
+      if (setup) {
+        applySetup(index, setup, msg);
+        // Option 1 bundle: if guardian-setup includes an embedded `share`, persist it too.
+        safePersistEmbeddedShare(raw, setup);
+      }
       if (update) applyUpdate(index, update, msg);
       index.seen[msgId] = 1;
     }

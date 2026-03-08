@@ -40,7 +40,8 @@ const initiateNDKInstanceForDMs = async (key, relays) => {
     const signer = new NDKNip46Signer(ndkInstance, userKeys.bunker, localKeys);
     ndkInstance.signer = signer;
   }
-  await ndkInstance.connect(2000);
+  // Give slow networks a chance; NIP-17 relays can be flaky.
+  await ndkInstance.connect(8000);
   ndkInstance.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({
     ndk: ndkInstance,
   });

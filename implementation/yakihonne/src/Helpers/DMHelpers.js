@@ -317,13 +317,13 @@ const initPublishing = async (name, relays, event1, event2) => {
     const ev1 = new NDKEvent(ndkInstanceForDM, event1);
     const ev2 = new NDKEvent(ndkInstanceForDM, event2);
 
-    const backoffs = [250, 1000, 3000];
+    const backoffs = [500, 1500, 4000, 8000];
 
     for (let attempt = 0; attempt <= backoffs.length; attempt++) {
       try {
         const [res1, res2] = await Promise.all([
-          ev1.publish(relaySet, 5000, 1),
-          ev2.publish(relaySet, 5000, 1),
+          ev1.publish(relaySet, 15000, 1),
+          ev2.publish(relaySet, 15000, 1),
         ]);
 
         if (!(res1?.size > 0 && res2?.size > 0)) {

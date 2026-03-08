@@ -365,10 +365,10 @@ function KeyRotationDemoPage() {
       });
 
       const now = Math.floor(Date.now() / 1000);
-      const totalMsgs = n * 2;
-      let sentMsgs = 0;
+      const totalGuardians = n;
+      let sentGuardians = 0;
 
-      setToast({ title: "Sending setup via DM", sent: 0, total: totalMsgs, status: "in-progress" });
+      setToast({ title: "Sending setup via DM", sent: 0, total: totalGuardians, status: "in-progress" });
 
       for (let i = 0; i < validGuardians.length; i++) {
         const guardian_id = i + 1;
@@ -376,6 +376,7 @@ function KeyRotationDemoPage() {
         const shareRow = (split?.shares || []).find((s) => Number(s.id) === guardian_id);
         if (!shareRow?.share) throw new Error(`missing share for guardian_id=${guardian_id}`);
 
+        // Option 1 bundle: embed share into the guardian-setup DM.
         const setup = {
           type: "guardian-setup",
           version: 1,
@@ -391,30 +392,19 @@ function KeyRotationDemoPage() {
           created_at: now,
           updated_at: now,
           status: "active",
-        };
 
-        const shareMsg = {
-          type: "guardian-share",
-          version: 1,
-          group_id: computedGroupId,
-          guardian_id,
-          threshold: t,
-          group_pubkey,
+          // Embedded share (demo UX). Guardians can persist this as a guardian-share-map entry.
+          share_version: 1,
           share: shareRow.share,
-          created_at: now,
         };
 
-        const ok1 = await sendMessage(g.pubhex, JSON.stringify(setup));
-        sentMsgs += ok1 ? 1 : 0;
-        setToast({ title: "Sending setup via DM", sent: sentMsgs, total: totalMsgs, status: "in-progress" });
-
-        const ok2 = await sendMessage(g.pubhex, JSON.stringify(shareMsg));
-        sentMsgs += ok2 ? 1 : 0;
-        setToast({ title: "Sending setup via DM", sent: sentMsgs, total: totalMsgs, status: "in-progress" });
+        const ok = await sendMessage(g.pubhex, JSON.stringify(setup));
+        sentGuardians += ok ? 1 : 0;
+        setToast({ title: "Sending setup via DM", sent: sentGuardians, total: totalGuardians, status: "in-progress" });
       }
 
-      setSendResult(`sent ${sentMsgs}/${totalMsgs} setup/share DM(s) for group_id ${computedGroupId.slice(0, 12)}…`);
-      setToast({ title: "Setup sent", sent: sentMsgs, total: totalMsgs, status: sentMsgs === totalMsgs ? "ok" : "partial" });
+      setSendResult(`sent ${sentGuardians}/${totalGuardians} setup DM(s) for group_id ${computedGroupId.slice(0, 12)}…`);
+      setToast({ title: "Setup sent", sent: sentGuardians, total: totalGuardians, status: sentGuardians === totalGuardians ? "ok" : "partial" });
 
       // Auto-hide toast after a moment.
       setTimeout(() => setToast(null), 3500);
@@ -666,7 +656,7 @@ function KeyRotationDemoPage() {
               : "Send setup via DM"}
           </button>
           <span style={{ opacity: 0.75, fontSize: 12 }}>
-            Demo-only: sends guardian-setup + guardian-share to each guardian ({threshold}-of-{guardianCount}).
+            Demo-only: sends one DM per guardian containing setup + embedded share ({threshold}-of-{guardianCount}).
           </span>
         </div>
       </section>
