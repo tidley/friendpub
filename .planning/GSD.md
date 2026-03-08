@@ -27,5 +27,6 @@ Nostr NIP-17 guardian-based key rotation demo + related helpers/tests. Main work
 - Some other subprojects in `implementation/` may have their own test/deps issues; Yakihonne unit tests were passing when last checked.
 
 ## Next steps
+- Flesh out the Friendpub NIP draft (mutual-follows-only guardian pool, adaptive sampling).
 - Add UI to show which DM relays are connected/used.
 - Optionally allow selecting a smaller relay set for DMs.
