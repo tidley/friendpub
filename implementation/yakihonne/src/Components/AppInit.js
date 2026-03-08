@@ -1187,13 +1187,18 @@ export default function AppInit() {
         .filter((_) => _.status)
         .map((_) => _.pubkey)
         .slice(0, 200);
-      localStorage.setItem(
-        `backup_wot`,
-        JSON.stringify({
-          last_updated: backupFollowings.data[0].created_at + 1,
-          wotPubkeys,
-        }),
-      );
+      try {
+        localStorage.setItem(
+          `backup_wot`,
+          JSON.stringify({
+            last_updated: backupFollowings.data[0].created_at + 1,
+            wotPubkeys,
+          }),
+        );
+      } catch (e) {
+        // Non-fatal: localStorage can hit quota in long-lived demo profiles.
+        console.warn("[backup_wot] persist failed", e?.name || e?.message || e);
+      }
     };
     if (followings && followings?.followings?.length > 0) {
       saveRelaysListsForUsers(followings?.followings);

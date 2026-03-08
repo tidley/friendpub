@@ -604,17 +604,32 @@ export function ConversationBox({ convo, back, noHeader = false }) {
 
         // Select the correct share *for this guardian*.
         // Prefer a per-(group_id, guardian_id) stored share; fall back to legacy single-slot.
-        const shareRaw =
-          (chosen?.group_id && chosen?.guardian_id
-            ? getGuardianShareFor({ group_id: chosen.group_id, guardian_id: chosen.guardian_id })
-            : "") || guardianShareJSON;
+        // Share selection priority:
+        //  1) Embedded share on the chosen guardian-setup record (option-1 bundle)
+        //  2) Per-(group_id, guardian_id) localStorage map
+        //  3) Legacy single-slot JSON textarea
+        let share = null;
 
-        if (!shareRaw) {
-          throw new Error(
-            "Missing guardian share for this guardian. If you're running multiple guardians in one browser profile, you must store a distinct share per guardian.",
-          );
+        if (chosen?.share) {
+          share = {
+            id: Number(chosen.guardian_id),
+            share: String(chosen.share).trim(),
+            threshold: Number(chosen.threshold || 2),
+            groupPubkey: String(chosen.group_pubkey || "").trim(),
+          };
+        } else {
+          const shareRaw =
+            (chosen?.group_id && chosen?.guardian_id
+              ? getGuardianShareFor({ group_id: chosen.group_id, guardian_id: chosen.guardian_id })
+              : "") || guardianShareJSON;
+
+          if (!shareRaw) {
+            throw new Error(
+              "Missing guardian share for this guardian. Fix: ensure the guardian-setup DM includes an embedded share, or that localStorage guardian-share-map-v1 has an entry for this group_id:guardian_id.",
+            );
+          }
+          share = JSON.parse(shareRaw);
         }
-        const share = JSON.parse(shareRaw);
 
         // Safety: ensure the guardian share matches the chosen setup.
         if (Number.isFinite(Number(share?.id)) && Number(chosen?.guardian_id) !== Number(share?.id)) {
