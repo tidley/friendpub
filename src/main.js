@@ -18,6 +18,77 @@ $('genRequester').onclick = () => {
   $('newNpubOut').textContent = `new npub: ${k.npub}`;
 };
 
+$('sendSetup').onclick = async () => {
+  try {
+    const skHex = toHex($('newNsec').value.trim());
+    const senderNpub = nip19.npubEncode(genPub(skHex));
+
+    const guardians = $('guardians').value.trim().split('\n').filter(Boolean).map(parseGuardianLine);
+    if (guardians.length < 3) throw new Error('need 3 guardian lines (id,npub)');
+
+    // Create a deterministic group id for this guardian set (demo-friendly, not cryptographic).
+    const threshold = 2;
+    const sorted = guardians.map((g) => (g.npub || '').trim()).filter(Boolean).sort();
+    const preimage = `guardian-setup:v1|${threshold}|${sorted.join(',')}`;
+    const group_id = `g_${simpleHash(preimage)}`;
+
+    // Mint 2-of-3 FROST dealer shares and DM each guardian their secret share.
+    const dealer = dealerCreate2of3();
+    const sharesById = new Map(dealer.shares.map((s) => [Number(s.id), s]));
+
+    for (const g of guardians) {
+      const s = sharesById.get(Number(g.id));
+      if (!s) throw new Error(`missing share for guardian id ${g.id}`);
+
+      const setup = {
+        type: 'guardian-setup',
+        version: 1,
+        group_id,
+        threshold,
+        participant_ids: [1, 2, 3],
+        guardian_id: Number(g.id),
+        guardian_npub: (g.npub || '').trim(),
+        requester_npub: senderNpub,
+        group_pubkey: dealer.groupPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      const guardianShare = {
+        type: 'guardian-share',
+        version: 1,
+        group_id,
+        threshold,
+        guardian_id: Number(g.id),
+        groupPubkey: dealer.groupPubkey,
+        share: s.share.toString(16).padStart(64, '0'),
+      };
+
+      // Send as two DMs so the guardian side can ingest/parse independently.
+      await sendNip17DM(relays(), skHex, nip19.decode(g.npub).data, setup);
+      await sendNip17DM(relays(), skHex, nip19.decode(g.npub).data, guardianShare);
+    }
+
+    // Update UI: append group pubkey to guardian lines so rotation-request can reuse it.
+    const updatedLines = guardians.map((g) => `${g.id},${g.npub},${dealer.groupPubkey}`);
+    $('guardians').value = updatedLines.join('\n');
+
+    // Convenience: put guardian #1 share into the Guardian pane by default.
+    const s1 = sharesById.get(1);
+    if (s1) {
+      $('guardianShare').value = JSON.stringify({
+        id: 1,
+        threshold,
+        share: s1.share.toString(16).padStart(64, '0'),
+        groupPubkey: dealer.groupPubkey,
+      }, null, 2);
+    }
+
+    setStatus(`setup sent (group_id ${group_id})`);
+  } catch (e) {
+    setStatus(`setup failed: ${e.message}`);
+  }
+};
+
 $('sendReq').onclick = async () => {
   try {
     const skHex = toHex($('newNsec').value.trim());
