@@ -19,7 +19,7 @@ import {
   ingestGuardianSetupsFromChatrooms,
 } from "@/Helpers/GuardianSetupIndex";
 import {
-  dealerSplitSecret2of3,
+  dealerSplitSecretShamir,
   deriveCompressedPubkeyHex,
   getRandomPrivateKeyBytes,
 } from "@/Helpers/GuardianGroup";
@@ -57,6 +57,7 @@ function KeyRotationDemoPage() {
   const [guardiansRows, setGuardiansRows] = useState(makeEmptyGuardians(DEFAULT_GUARDIAN_COUNT));
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState("");
+  const [toast, setToast] = useState(null);
   const [partialRows, setPartialRows] = useState([]);
   const [proofPayload, setProofPayload] = useState(null);
 
@@ -317,6 +318,7 @@ function KeyRotationDemoPage() {
     try {
       setSending(true);
       setSendResult("");
+      setToast(null);
 
       const isE2E = (typeof window !== "undefined" && Boolean(window.__PLAYWRIGHT__)) || process.env.NEXT_PUBLIC_E2E === "1";
       if (isE2E) {
@@ -327,10 +329,9 @@ function KeyRotationDemoPage() {
       if (!oldNpub.trim()) throw new Error("old npub required (used as owner_old_npub)");
       if (!computedGroupId) throw new Error("computed group_id is empty (check threshold + guardian npubs)");
 
-      // Limitations: demo-only setup generator currently supports 2-of-3.
-      if (Number(guardianCount) !== 3 || Number(threshold) !== 2) {
-        throw new Error("setup DM generator currently supports threshold=2 and guardianCount=3 only");
-      }
+      const n = Number(guardianCount) || 1;
+      const t = Number(threshold) || 1;
+      if (t < 1 || t > n) throw new Error("threshold must be between 1 and N");
 
       const validGuardians = guardiansRows
         .map((r) => (r?.npub || "").trim())
@@ -342,7 +343,7 @@ function KeyRotationDemoPage() {
         })
         .filter(Boolean);
 
-      if (validGuardians.length !== 3) throw new Error("need 3 valid guardian npubs");
+      if (validGuardians.length !== n) throw new Error(`need exactly ${n} valid guardian npubs`);
 
       const preflightRelays = [...new Set([...(userInboxRelays || []), ...dmRelaysOnPlatform, ...relaysOnPlatform])];
       const connectedCount = await preflightDMRelayConnection(
@@ -351,19 +352,23 @@ function KeyRotationDemoPage() {
       );
       if (!connectedCount) throw new Error("No DM relays connected (preflight failed)");
 
-      // Generate a group key + 2-of-3 shares (demo dealer). Group ID remains deterministic from input npubs.
+      // Generate a group key + t-of-n shares (demo dealer). group_id remains deterministic from input npubs.
       const groupSecretBytes = getRandomPrivateKeyBytes();
       const group_pubkey = deriveCompressedPubkeyHex(groupSecretBytes);
       const groupSecretHex = Array.from(groupSecretBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-      const split = dealerSplitSecret2of3({
+
+      const participant_ids = Array.from({ length: n }, (_, i) => i + 1);
+      const split = dealerSplitSecretShamir({
         groupSecretHex,
-        participantIds: [1, 2, 3],
-        threshold: 2,
+        participantIds: participant_ids,
+        threshold: t,
       });
 
-      let okCount = 0;
       const now = Math.floor(Date.now() / 1000);
-      const participant_ids = [1, 2, 3];
+      const totalMsgs = n * 2;
+      let sentMsgs = 0;
+
+      setToast({ title: "Sending setup via DM", sent: 0, total: totalMsgs, status: "in-progress" });
 
       for (let i = 0; i < validGuardians.length; i++) {
         const guardian_id = i + 1;
@@ -377,8 +382,8 @@ function KeyRotationDemoPage() {
           record_id: buildGuardianSetupRecordId({ group_id: computedGroupId, guardian_id, owner_old_npub: oldNpub.trim() }),
           group_id: computedGroupId,
           guardian_id,
-          threshold: 2,
-          guardian_count: 3,
+          threshold: t,
+          guardian_count: n,
           owner_old_npub: oldNpub.trim(),
           guardian_npub: g.npub,
           group_pubkey,
@@ -393,21 +398,30 @@ function KeyRotationDemoPage() {
           version: 1,
           group_id: computedGroupId,
           guardian_id,
-          threshold: 2,
+          threshold: t,
           group_pubkey,
           share: shareRow.share,
           created_at: now,
         };
 
         const ok1 = await sendMessage(g.pubhex, JSON.stringify(setup));
+        sentMsgs += ok1 ? 1 : 0;
+        setToast({ title: "Sending setup via DM", sent: sentMsgs, total: totalMsgs, status: "in-progress" });
+
         const ok2 = await sendMessage(g.pubhex, JSON.stringify(shareMsg));
-        if (ok1) okCount++;
-        if (ok2) okCount++;
+        sentMsgs += ok2 ? 1 : 0;
+        setToast({ title: "Sending setup via DM", sent: sentMsgs, total: totalMsgs, status: "in-progress" });
       }
 
-      setSendResult(`sent ${okCount} setup/share DM(s) for group_id ${computedGroupId.slice(0, 12)}…`);
+      setSendResult(`sent ${sentMsgs}/${totalMsgs} setup/share DM(s) for group_id ${computedGroupId.slice(0, 12)}…`);
+      setToast({ title: "Setup sent", sent: sentMsgs, total: totalMsgs, status: sentMsgs === totalMsgs ? "ok" : "partial" });
+
+      // Auto-hide toast after a moment.
+      setTimeout(() => setToast(null), 3500);
     } catch (e) {
       setSendResult(`setup send failed: ${e.message}`);
+      setToast({ title: "Setup failed", sent: 0, total: 0, status: "error", message: String(e.message || e) });
+      setTimeout(() => setToast(null), 4500);
     } finally {
       setSending(false);
     }
@@ -509,6 +523,57 @@ function KeyRotationDemoPage() {
 
   return (
     <div style={{ maxWidth: 920, margin: "24px auto", padding: "0 12px", color: "#e7ebff" }}>
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            right: 14,
+            bottom: 14,
+            width: 320,
+            maxWidth: "calc(100vw - 28px)",
+            padding: 12,
+            borderRadius: 10,
+            border: "1px solid rgba(148,163,184,0.35)",
+            background: "rgba(2,6,23,0.92)",
+            boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
+            zIndex: 9999,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+            <strong style={{ fontSize: 13 }}>{toast.title}</strong>
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => setToast(null)}
+              style={{ padding: "6px 10px" }}
+            >
+              Close
+            </button>
+          </div>
+          {Number.isFinite(Number(toast.total)) && toast.total > 0 && (
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+              Sent {toast.sent}/{toast.total} • Remaining {Math.max(0, toast.total - toast.sent)}
+            </div>
+          )}
+          {toast?.message && (
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>{toast.message}</div>
+          )}
+          <div style={{ marginTop: 10, height: 8, borderRadius: 999, background: "rgba(148,163,184,0.22)", overflow: "hidden" }}>
+            <div
+              style={{
+                height: "100%",
+                width:
+                  toast.total > 0 ? `${Math.round((Math.min(toast.sent, toast.total) / toast.total) * 100)}%` : "100%",
+                background:
+                  toast.status === "error" ? "#ef4444" : toast.status === "ok" ? "#22c55e" : "#60a5fa",
+                transition: "width 180ms ease",
+              }}
+            />
+          </div>
+        </div>
+      )}
       <h1 style={{ marginBottom: 8 }}>Key rotation demo (NIP-17 guardians)</h1>
       <p style={{ opacity: 0.8, marginTop: 0 }}>
         Simplified requester UX: recovery mode only. New npub is always your current account.
@@ -596,10 +661,12 @@ function KeyRotationDemoPage() {
             disabled={sending}
             title="Sends guardian-setup + guardian-share via NIP-17 DM (demo-only)"
           >
-            Send setup via DM
+            {sending && toast?.status === "in-progress"
+              ? `Sending… (${toast.sent}/${toast.total})`
+              : "Send setup via DM"}
           </button>
           <span style={{ opacity: 0.75, fontSize: 12 }}>
-            Demo-only: currently supports 2-of-3 and sends each guardian their share.
+            Demo-only: sends guardian-setup + guardian-share to each guardian ({threshold}-of-{guardianCount}).
           </span>
         </div>
       </section>

@@ -45,9 +45,58 @@ const bytesToBig = (b, secpImpl = secp) => {
 const isHex = (v, len) =>
   typeof v === "string" && /^[0-9a-f]+$/i.test(v) && (!len || v.length === len);
 
-// Simple Shamir (degree-1) 2-of-3 split of one group secret scalar:
-//   f(x) = secret + a1*x (mod n)
-// Shares: f(1), f(2), f(3)
+// Generic Shamir split of one group secret scalar:
+//   f(x) = secret + a1*x + a2*x^2 + ... + a(t-1)*x^(t-1) (mod n)
+// Shares: f(id) for each participant id.
+export const dealerSplitSecretShamir = ({
+  groupSecretHex,
+  participantIds = [1, 2, 3],
+  threshold = 2,
+  coeffHexes,
+  secpImpl = secp,
+} = {}) => {
+  if (!isHex(groupSecretHex, 64)) throw new Error("groupSecretHex must be 32-byte hex");
+  const t = Number(threshold || 2);
+  if (!Number.isInteger(t) || t < 1) throw new Error("threshold must be a positive integer");
+
+  const ids = (participantIds || []).map(Number).filter((x) => Number.isFinite(x));
+  if (!ids.length) throw new Error("participantIds required");
+  if (t > ids.length) throw new Error("threshold cannot exceed participant count");
+
+  const secret = BigInt("0x" + groupSecretHex);
+
+  // Degree is (t-1); we need (t-1) random coefficients.
+  const want = Math.max(0, t - 1);
+  const a = Array.from({ length: want }, (_, i) => {
+    const hex = Array.isArray(coeffHexes) ? String(coeffHexes[i] || "").trim() : "";
+    return isHex(hex, 64)
+      ? BigInt("0x" + hex)
+      : bytesToBig(getRandomPrivateKeyBytes(secpImpl), secpImpl);
+  });
+
+  const shares = ids.map((id) => {
+    const x = BigInt(id);
+    // Horner's method: (((a_{t-1}*x + a_{t-2})*x + ... )*x + a1)*x + secret
+    let y = 0n;
+    for (let i = a.length - 1; i >= 0; i--) y = mod((y * x) + a[i]);
+    y = mod((y * x) + secret);
+
+    return {
+      id: Number(id),
+      share: y.toString(16).padStart(64, "0"),
+      threshold: t,
+    };
+  });
+
+  return {
+    threshold: t,
+    participantIds: ids,
+    coeffHexes: a.map((x) => mod(x).toString(16).padStart(64, "0")),
+    shares,
+  };
+};
+
+// Back-compat helper: 2-of-3 degree-1 Shamir split.
 export const dealerSplitSecret2of3 = ({
   groupSecretHex,
   participantIds = [1, 2, 3],
@@ -55,25 +104,11 @@ export const dealerSplitSecret2of3 = ({
   coeffHex,
   secpImpl = secp,
 } = {}) => {
-  if (!isHex(groupSecretHex, 64)) throw new Error("groupSecretHex must be 32-byte hex");
-  const x = BigInt("0x" + groupSecretHex);
-  const a1 = isHex(coeffHex, 64)
-    ? BigInt("0x" + coeffHex)
-    : bytesToBig(getRandomPrivateKeyBytes(secpImpl), secpImpl);
-
-  const shares = (participantIds || [1, 2, 3]).map((id) => {
-    const xi = mod(x + a1 * BigInt(Number(id)));
-    return {
-      id: Number(id),
-      share: xi.toString(16).padStart(64, "0"),
-      threshold: Number(threshold || 2),
-    };
+  return dealerSplitSecretShamir({
+    groupSecretHex,
+    participantIds,
+    threshold,
+    coeffHexes: coeffHex ? [coeffHex] : undefined,
+    secpImpl,
   });
-
-  return {
-    threshold: Number(threshold || 2),
-    participantIds: (participantIds || [1, 2, 3]).map(Number),
-    coeffHex: mod(a1).toString(16).padStart(64, "0"),
-    shares,
-  };
 };
