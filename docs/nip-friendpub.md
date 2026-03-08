@@ -38,22 +38,78 @@ This NIP does **not** specify a proactive share-refresh protocol (that can be a 
 - **sample**: a deterministic subset of the pool used for a specific rotation request.
 - **threshold**: minimum number of attestations required.
 
-## Guardian pool derivation (mutual follows only)
-Guardian pool MUST be derived from NIP-03 contact lists (kind `3`).
+## Guardian pool derivation (mutual follows + mutual DM link)
+Guardian pool MUST be derived from NIP-03 contact lists (kind `3`) **and** a mutual DM handshake (“link”) recorded in NIP-17 DM history.
 
+### 1) Mutual follow requirement (public, verifiable)
 Let:
-- `F_old` be the set of pubkeys followed by `old_pubkey` (from old's contact list).
-- `F_back` be the set of pubkeys that follow `old_pubkey` (requires fetching each candidate's contact list).
+- `F_old` be the set of pubkeys followed by `old_pubkey` (from old's kind-3 contact list).
+- `F_back` be the set of pubkeys that follow `old_pubkey` (requires fetching each candidate's kind-3 contact list).
 
-The guardian pool `G` is the set of **mutual follows**:
+Define the mutual-follow set:
 
 ```
-G = { pk | pk ∈ F_old AND old_pubkey ∈ F_pk }
+MF = { pk | pk ∈ F_old AND old_pubkey ∈ F_pk }
 ```
 
 Notes:
-- Clients MUST define a consistent method of selecting the relevant kind-3 events (latest by `created_at`, or by relay policy) for determinism.
-- Clients SHOULD cache and include relay sources used to compute `G` for auditability.
+- Clients MUST define a consistent method of selecting the relevant kind-3 events (e.g., latest by `created_at` per pubkey).
+- Any third party can recompute `MF` from kind-3 events (subject to relay availability).
+
+### 2) Mutual DM link requirement (private, security-critical)
+In addition to being a mutual follow, a guardian MUST have an established **Friendpub Link** with the owner.
+
+A Friendpub Link is established when all of the following have happened (order can vary, but both directions must be true):
+
+- `owner` follows `guardian` (kind 3)
+- `owner` has sent a NIP-17 DM to `guardian`
+- `guardian` follows `owner` (kind 3)
+- `guardian` has sent a NIP-17 DM to `owner`
+
+At the final step (the second party sends their DM), the two parties exchange enough information to allow either to later verify a key rotation request from the other.
+
+This DM handshake is NOT publicly verifiable (it is encrypted). It is used to prevent “cold” guardians (no prior DM relationship) from being usable in a rotation.
+
+Define the eligible guardian pool:
+
+```
+G = { pk | pk ∈ MF AND link_exists(owner, pk) }
+```
+
+## Friendpub Link (mutual DM handshake)
+
+### Link messages (NIP-17 DM payload)
+A link is established by exchanging two DMs (one each direction) with payloads:
+
+```json
+{
+  "type": "friendpub-link",
+  "version": 1,
+  "link_id": "hex",
+  "owner_npub": "npub1…",
+  "peer_npub": "npub1…",
+  "salt": "hex-32-bytes",
+  "created_at": 123
+}
+```
+
+Rules:
+- Each side generates a fresh random `salt` and sends it to the other.
+- `link_id` MUST be deterministic:
+
+```
+link_id = sha256("friendpub-link:v1" || sort(owner_pubkey, peer_pubkey) || salt_owner || salt_peer)
+```
+
+- Both sides derive a shared secret:
+
+```
+shared_secret = sha256("friendpub-secret:v1" || sort(owner_pubkey, peer_pubkey) || salt_owner || salt_peer)
+```
+
+The derived `shared_secret` is stored locally by each party and later used to validate rotation requests.
+
+Security note: If DMs are not decryptable / NIP-17 is unavailable, the link cannot be established.
 
 ## Deterministic sampling
 Large pools should not require contacting everyone.
@@ -103,6 +159,8 @@ The sampled set `S` is ordered by ascending score.
 ### 1) Rotation request (DM)
 The new key sends NIP-17 DMs to each guardian in `S`.
 
+The guardian MUST validate that a Friendpub Link exists and that the included `secret_proof` matches the locally-derived `shared_secret` for that link.
+
 Payload:
 
 ```json
@@ -110,14 +168,20 @@ Payload:
   "type": "rotation-request",
   "version": 3,
   "req_id": "uuid",
-  "old_pubkey": "hex",
   "old_npub": "npub1…",
-  "new_pubkey": "hex",
   "new_npub": "npub1…",
   "nonce": "uuid",
+  "guardian_id": 1,
+  "participant_ids": [1,2,3],
+
+  "link": {
+    "link_id": "hex",
+    "secret_proof": "hex"
+  },
+
   "group": {
-    "derivation": "mutual-follows-nip03:v1",
-    "pool_commit": "sha256(...)",
+    "derivation": "mutual-follows+nip17-link:v1",
+    "pool_commit": "sha256(...) (optional)",
     "sample": {
       "m": 50,
       "t": 30,
@@ -125,10 +189,19 @@ Payload:
       "guardians": ["npub1…", "npub1…"]
     }
   },
+
   "reason": "string",
   "created_at": 123,
   "expires_at": 456
 }
+```
+
+Where:
+
+```
+secret_proof = sha256(
+  "friendpub-proof:v1" || shared_secret || req_id || nonce || old_npub || new_npub || guardian_id
+)
 ```
 
 ### 2) Guardian attestation (DM)
