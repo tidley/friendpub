@@ -520,7 +520,7 @@ function KeyRotationDemoPage() {
           style={{
             position: "fixed",
             right: 14,
-            bottom: 14,
+            top: 14,
             width: 320,
             maxWidth: "calc(100vw - 28px)",
             padding: 12,
@@ -528,7 +528,7 @@ function KeyRotationDemoPage() {
             border: "1px solid rgba(148,163,184,0.35)",
             background: "rgba(2,6,23,0.92)",
             boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
-            zIndex: 9999,
+            zIndex: 2147483647,
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
