@@ -511,6 +511,8 @@ function KeyRotationDemoPage() {
           reason: reason.trim(),
           created_at: Math.floor(Date.now() / 1000),
           expires_at: Math.floor(Date.now() / 1000) + 3600,
+          // Demo default: require link to predate the last 7 days.
+          eligibility_cutoff: Math.floor(Date.now() / 1000) - 7 * 24 * 3600,
           link: {
             link_id: "",
             secret_proof: buildSecretProofV1({

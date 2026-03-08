@@ -21,12 +21,15 @@ Friendpub proposes a **web-of-trust threshold rotation**:
 ## Scope
 This NIP specifies:
 
-- Deterministic **guardian pool derivation** from NIP-03 contact lists.
+- Deterministic **guardian pool derivation** from NIP-03 contact lists plus a mutual NIP-17 link handshake.
 - Deterministic **sampling** (adaptive) for large accounts.
+- **Eligibility cutoff** rules (time-based; no external blockheight).
 - Message and event formats for:
+  - Friendpub link handshake
   - rotation requests
   - guardian attestations
   - published rotation proofs
+  - (optional) public guardian commitments
 
 This NIP does **not** specify a proactive share-refresh protocol (that can be a future extension).
 
@@ -111,6 +114,20 @@ The derived `shared_secret` is stored locally by each party and later used to va
 
 Security note: If DMs are not decryptable / NIP-17 is unavailable, the link cannot be established.
 
+## Eligibility cutoff (anti-sybil churn)
+Rotation requests MUST include an `eligibility_cutoff` unix timestamp.
+
+Guardians MUST refuse to attest unless, for the (owner, guardian) pair:
+
+- the mutual-follow relationship existed before `eligibility_cutoff` (best-effort; see note), AND
+- the Friendpub Link existed before `eligibility_cutoff`.
+
+This prevents an attacker who briefly controls an account from rapidly inflating the guardian pool with newly-created sybils and immediately rotating.
+
+Notes:
+- The mutual-follow timing may not be perfectly publicly reconstructable due to relay history gaps; clients SHOULD treat it as best-effort.
+- The Friendpub Link timing is based on when each guardian first observed/decrypted the link DMs.
+
 ## Deterministic sampling
 Large pools should not require contacting everyone.
 
@@ -155,6 +172,36 @@ Take the `m` guardians with the lowest score (ties broken by pubkey).
 
 The sampled set `S` is ordered by ascending score.
 
+## Optional public guardian commitment (for verifiers)
+Because the DM link handshake is encrypted, third-party verifiers cannot prove that link material existed.
+
+Optionally, the old identity MAY publish a periodic public commitment event so verifiers can assess guardian stability.
+
+### Event kind
+This NIP defines a new event kind: `friendpub_guardian_commitment` (kind TBD).
+
+### Content
+The event content MUST be JSON:
+
+```json
+{
+  "type": "friendpub-guardian-commitment",
+  "version": 1,
+  "owner_npub": "npub1…",
+  "created_at": 1710000000,
+  "eligibility_cutoff": 1707408000,
+  "derivation": "mutual-follows-nip03:v1",
+  "guardian_pool_commit": "sha256(sorted_guardian_npubs)",
+  "note": "optional"
+}
+```
+
+Guidance:
+- This commitment is meant to be a low-cost public anchor.
+- It commits to the *publicly derivable* portion (mutual follows) and the cutoff used.
+
+Rotation requests MAY include `pool_commit` to allow verifiers to cross-check against the latest commitment older than the cutoff window.
+
 ## Message flow
 ### 1) Rotation request (DM)
 The new key sends NIP-17 DMs to each guardian in `S`.
@@ -173,6 +220,8 @@ Payload:
   "nonce": "uuid",
   "guardian_id": 1,
   "participant_ids": [1,2,3],
+
+  "eligibility_cutoff": 1710000000,
 
   "link": {
     "link_id": "hex",

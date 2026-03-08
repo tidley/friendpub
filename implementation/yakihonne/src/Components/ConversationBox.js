@@ -652,10 +652,21 @@ export function ConversationBox({ convo, back, noHeader = false }) {
 
         const linkA = getLinkFor({ owner_npub, peer_npub: guardian_npub });
         const linkB = getLinkFor({ owner_npub: guardian_npub, peer_npub: owner_npub });
-        const sharedSecret = String(linkA?.shared_secret || linkB?.shared_secret || "").trim();
+        const link = linkA || linkB;
+        const sharedSecret = String(link?.shared_secret || "").trim();
         if (!sharedSecret) {
           throw new Error(
             "No Friendpub link secret found for this guardian. Fix: open the DM between owner+guardian and click 'Friendpub link (DM)' on both sides (mutual), then retry.",
+          );
+        }
+
+        // Eligibility cutoff enforcement: refuse if the link is too new.
+        const cutoff = Number(rotationReq?.eligibility_cutoff || 0) || 0;
+        const linkUpdated = Number(link?.updated_at || 0) || 0;
+        if (cutoff && linkUpdated && linkUpdated > cutoff) {
+          throw new Error(
+            `Friendpub link is too new for this rotation (link_updated_at=${linkUpdated}, cutoff=${cutoff}). ` +
+              "Wait until the link ages past the cutoff window or re-issue the request with a later cutoff.",
           );
         }
 

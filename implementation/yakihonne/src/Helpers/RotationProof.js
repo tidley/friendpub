@@ -291,6 +291,7 @@ export const parseRotationRequestV3 = (raw) => {
     participant_ids: Array.isArray(j.participant_ids) ? j.participant_ids.map(Number) : null,
     new_npub: (j.new_npub || "").trim(),
     nonce: (j.nonce || "").trim(),
+    eligibility_cutoff: Number(j.eligibility_cutoff || 0) || 0,
     link: {
       link_id: (j.link?.link_id || "").trim(),
       secret_proof: (j.link?.secret_proof || "").trim(),
