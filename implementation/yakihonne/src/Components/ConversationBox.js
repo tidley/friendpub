@@ -623,14 +623,23 @@ export function ConversationBox({ convo, back, noHeader = false }) {
               `Each guardian must use their own distinct share JSON.`,
           );
         }
-        if (
-          share?.groupPubkey &&
-          chosen?.group_pubkey &&
-          `${share.groupPubkey}`.trim().toLowerCase() !== `${chosen.group_pubkey}`.trim().toLowerCase()
-        ) {
-          throw new Error(
-            "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. Ensure the share JSON belongs to this group.",
-          );
+        const normalizeGroupPubkey = (v) => {
+          const s = `${v || ""}`.trim().toLowerCase();
+          // Accept either 33-byte compressed secp pubkey hex (66 chars, 02/03 prefix)
+          // or x-only 32-byte hex (64 chars). Compare on x-only when possible.
+          if (/^(02|03)[0-9a-f]{64}$/.test(s)) return s.slice(2);
+          if (/^[0-9a-f]{64}$/.test(s)) return s;
+          return s;
+        };
+
+        if (share?.groupPubkey && chosen?.group_pubkey) {
+          const a = normalizeGroupPubkey(share.groupPubkey);
+          const b = normalizeGroupPubkey(chosen.group_pubkey);
+          if (a && b && a !== b) {
+            throw new Error(
+              "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. Ensure the share JSON belongs to this group.",
+            );
+          }
         }
 
         const payload = buildRotationAttestationV2({
