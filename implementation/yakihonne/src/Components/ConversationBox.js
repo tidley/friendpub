@@ -636,8 +636,18 @@ export function ConversationBox({ convo, back, noHeader = false }) {
           const a = normalizeGroupPubkey(share.groupPubkey);
           const b = normalizeGroupPubkey(chosen.group_pubkey);
           if (a && b && a !== b) {
+            const gid = chosen?.group_id || "";
+            const gidShort = gid ? `${gid.slice(0, 14)}…` : "(none)";
+            const shareKey = chosen?.group_id && chosen?.guardian_id
+              ? `${chosen.group_id}:${Number(chosen.guardian_id)}`
+              : "(unknown)";
             throw new Error(
-              "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. Ensure the share JSON belongs to this group.",
+              "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. " +
+              `group_id=${gidShort} guardian_id=${Number(chosen?.guardian_id)}. ` +
+              `shareKey=${shareKey}. ` +
+              `share.groupPubkey=${String(share.groupPubkey || "").slice(0, 18)}… ` +
+              `setup.group_pubkey=${String(chosen.group_pubkey || "").slice(0, 18)}… ` +
+              "Fix: ensure the guardian ingested the latest guardian-setup DM (with embedded share) for this group, or clear/update localStorage guardian-share-map-v1 for that shareKey."
             );
           }
         }
