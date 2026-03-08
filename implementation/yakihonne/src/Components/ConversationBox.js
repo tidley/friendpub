@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { deleteMessage, sendMessage } from "@/Helpers/DMHelpers";
 import OptionsDropdown from "./OptionsDropdown";
 import { copyText } from "@/Helpers/Helpers";
+import { buildSecretProofV1, getLinkFor, upsertLinkSalt } from "@/Helpers/FriendpubLink";
 import DeleteWarning from "./DeleteWarning";
 import {
   buildGuardianGroupIdFromPubkey,
@@ -22,7 +23,7 @@ import {
   parseGuardianShareV1,
   parseRotationAttestationV2,
   parseRotationRequest,
-  parseRotationRequestV2,
+  parseRotationRequestV3,
 } from "@/Helpers/RotationProof";
 import {
   getRandomPrivateKeyBytes,
@@ -31,6 +32,7 @@ import {
 } from "@/Helpers/GuardianGroup";
 import {
   findGuardianSetupsForRequestV2,
+  findGuardianSetupsForRequestV3,
   getActiveGuardianSetups,
   ingestGuardianSetupsFromConversation,
 } from "@/Helpers/GuardianSetupIndex";
@@ -270,6 +272,33 @@ export function ConversationBox({ convo, back, noHeader = false }) {
       // eslint-disable-next-line no-console
       console.warn("[guardian-share] ingest failed", e?.message || e);
     }
+
+    // Ingest Friendpub link salts from DM history so link_id/shared_secret can be derived.
+    try {
+      const myNpub = userKeys?.pub ? String(nip19.npubEncode(userKeys.pub)).trim() : "";
+      if (!myNpub) return;
+      for (const msg of convo.convo || []) {
+        const raw = msg?.raw_content || msg?.content;
+        if (typeof raw !== "string") continue;
+        if (!(raw.includes('"type":"friendpub-link"') || raw.includes('"type": "friendpub-link"'))) continue;
+        let j = null;
+        try { j = JSON.parse(raw); } catch { j = null; }
+        if (!j || j.type !== "friendpub-link" || Number(j.version) !== 1) continue;
+        const owner_npub = String(j.owner_npub || "").trim();
+        const peer_npub = String(j.peer_npub || "").trim();
+        const salt = String(j.salt || "").trim();
+        if (!owner_npub || !peer_npub || !salt) continue;
+
+        if (myNpub === owner_npub) {
+          upsertLinkSalt({ owner_npub, peer_npub, salt_from_owner: salt });
+        } else if (myNpub === peer_npub) {
+          // Mirror into my namespace (I'm the owner of my local record).
+          upsertLinkSalt({ owner_npub: peer_npub, peer_npub: owner_npub, salt_from_peer: salt });
+        }
+      }
+    } catch (e) {
+      console.warn("[friendpub-link] ingest failed", e?.message || e);
+    }
   }, [convo]);
 
   useEffect(() => {
@@ -486,6 +515,45 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     }
   };
 
+  const sendFriendpubLinkNow = async () => {
+    try {
+      if (!userKeys?.pub) throw new Error("Login required");
+      if (!convo?.pubkey) throw new Error("Open a guardian DM first");
+
+      const owner_npub = String(nip19.npubEncode(userKeys.pub)).trim();
+      const peer_npub = String(nip19.npubEncode(convo.pubkey)).trim();
+
+      // Generate a random salt and send it. When both sides have exchanged salts,
+      // each will deterministically derive link_id + shared_secret.
+      const saltBytes = getRandomPrivateKeyBytes();
+      const salt = secp.etc.bytesToHex(saltBytes);
+
+      const payload = {
+        type: "friendpub-link",
+        version: 1,
+        owner_npub,
+        peer_npub,
+        salt,
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      // Store our outbound salt locally; inbound will be indexed from DM history.
+      upsertLinkSalt({ owner_npub, peer_npub, salt_from_owner: salt });
+
+      setShowProgress(true);
+      await sendMessage(convo.pubkey, JSON.stringify(payload));
+      setShowProgress(false);
+
+      const link = getLinkFor({ owner_npub, peer_npub });
+      if (link?.shared_secret) {
+        copyText(link.shared_secret, "Shared secret copied");
+      }
+    } catch (e) {
+      setShowProgress(false);
+      alert(`Send Friendpub link failed: ${e.message}`);
+    }
+  };
+
   const buildGuardianSharePayloadV1 = ({ setupPayload }) => {
     if (!setupPayload?.group_id || !setupPayload?.guardian_id || !setupPayload?.group_pubkey)
       throw new Error("invalid setup payload");
@@ -562,6 +630,88 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const handleConfirmRotationRequest = async (rotationReq, msgId) => {
     try {
       setShowProgress(true);
+
+      if (Number(rotationReq?.version) === 3) {
+        let candidates = findGuardianSetupsForRequestV3(rotationReq);
+        if (candidates.length === 0) {
+          const fallback = getActiveGuardianSetups().filter(
+            (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+          );
+          if (fallback.length === 0)
+            throw new Error("No guardian setup found for this request");
+          candidates = fallback;
+        }
+
+        const pick =
+          candidates.find((_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`) ||
+          candidates[0];
+
+        // Friendpub Link shared secret (derived from mutual DM link handshake)
+        const owner_npub = String(pick?.owner_old_npub || rotationReq.old_npub || "").trim();
+        const guardian_npub = String(pick?.guardian_npub || "").trim();
+
+        const linkA = getLinkFor({ owner_npub, peer_npub: guardian_npub });
+        const linkB = getLinkFor({ owner_npub: guardian_npub, peer_npub: owner_npub });
+        const sharedSecret = String(linkA?.shared_secret || linkB?.shared_secret || "").trim();
+        if (!sharedSecret) {
+          throw new Error(
+            "No Friendpub link secret found for this guardian. Fix: open the DM between owner+guardian and click 'Friendpub link (DM)' on both sides (mutual), then retry.",
+          );
+        }
+
+        const expected = buildSecretProofV1({
+          sharedSecret,
+          req_id: rotationReq.req_id,
+          nonce: rotationReq.nonce,
+          old_npub: rotationReq.old_npub,
+          new_npub: rotationReq.new_npub,
+          guardian_id: rotationReq.guardian_id,
+        });
+
+        const got = String(rotationReq?.link?.secret_proof || "").trim();
+        if (!got || expected !== got) throw new Error("Friendpub link proof does not match");
+
+        const chosen = pick;
+
+        // Share selection priority:
+        //  1) Embedded share on the chosen guardian-setup record (option-1 bundle)
+        //  2) Per-(group_id, guardian_id) localStorage map
+        //  3) Legacy single-slot JSON textarea
+        let share = null;
+
+        if (chosen?.share) {
+          share = {
+            id: Number(chosen.guardian_id),
+            share: String(chosen.share).trim(),
+            threshold: Number(chosen.threshold || 2),
+            groupPubkey: String(chosen.group_pubkey || "").trim(),
+          };
+        } else {
+          const shareRaw =
+            (chosen?.group_id && chosen?.guardian_id
+              ? getGuardianShareFor({ group_id: chosen.group_id, guardian_id: chosen.guardian_id })
+              : "") || guardianShareJSON;
+
+          if (!shareRaw) {
+            throw new Error(
+              "Missing guardian share for this guardian. Fix: ensure the guardian-setup DM includes an embedded share, or that localStorage guardian-share-map-v1 has an entry for this group_id:guardian_id.",
+            );
+          }
+          share = JSON.parse(shareRaw);
+        }
+
+        const payload = buildRotationAttestationV2({
+          req: rotationReq,
+          setup: chosen,
+          share,
+        });
+        const payloadText = JSON.stringify(payload);
+        devJsonAssert(payloadText, "rotation-attestation-send");
+        await sendMessage(convo.pubkey, payloadText);
+        setShowProgress(false);
+        return;
+      }
+
       if (Number(rotationReq?.version) === 2) {
         let candidates = findGuardianSetupsForRequestV2(rotationReq);
         if (candidates.length === 0) {
@@ -825,7 +975,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             const protocolType = getProtocolTypeFromRaw(rawCandidate);
             if (!jsonWarnedRef.current.has(msgId) && protocolType) {
               devJsonAssert(rawCandidate, `render-${protocolType}`);
-              const parsedReq = parseRotationRequestV2(rawCandidate);
+              const parsedReq = parseRotationRequest(rawCandidate);
               const parsedAtt = parseRotationAttestationV2(rawCandidate);
               if (protocolType === "rotation-request" && !parsedReq)
                 console.warn("[dm-json] rotation-request visible but parser rejected", { msgId });
@@ -842,7 +992,15 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                       (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
                     );
                   })()
-                : [];
+                : Number(rotationReq?.version) === 3
+                  ? (() => {
+                      const strict = findGuardianSetupsForRequestV3(rotationReq);
+                      if (strict.length > 0) return strict;
+                      return getActiveGuardianSetups().filter(
+                        (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+                      );
+                    })()
+                  : [];
             const sourceText =
               protocolType && typeof rawCandidate === "string"
                 ? rawCandidate
@@ -1304,6 +1462,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                   <button className="btn btn-small" type="button" onClick={handleGenerateGroup}>Generate group</button>
                   <button className="btn btn-small" type="button" onClick={() => copyText(buildGuardianGroupIdFromPubkey(setupDraft.group_pubkey) || "", "Copied")}>Copy group_id</button>
                   <button className="btn btn-small" type="button" onClick={() => copyText(setupDraft.group_pubkey || "", "Copied")}>Copy group_pubkey</button>
+                  <button className="btn btn-small" type="button" onClick={sendFriendpubLinkNow}>Friendpub link (DM)</button>
                 </div>
 
                 <input

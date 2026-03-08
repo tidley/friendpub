@@ -2,6 +2,7 @@ import {
   parseGuardianSetupUpdateV1,
   parseGuardianSetupV1,
   parseRotationRequestV2,
+  parseRotationRequestV3,
 } from "@/Helpers/RotationProof";
 
 const STORAGE_KEY = "guardian-setup-index-v1";
@@ -203,6 +204,23 @@ export const getActiveGuardianSetups = () => {
 
 export const findGuardianSetupsForRequestV2 = (request) => {
   const req = parseRotationRequestV2(request);
+  if (!req) return [];
+  const rows = getActiveGuardianSetups();
+  if (req.group_id) {
+    const strict = rows.filter(
+      (r) => r.group_id === req.group_id && Number(r.guardian_id) === Number(req.guardian_id),
+    );
+    if (strict.length > 0) return strict;
+  }
+  return rows.filter(
+    (r) =>
+      Number(r.guardian_id) === Number(req.guardian_id) &&
+      (!!req.old_npub ? r.owner_old_npub === req.old_npub : true),
+  );
+};
+
+export const findGuardianSetupsForRequestV3 = (request) => {
+  const req = parseRotationRequestV3(request);
   if (!req) return [];
   const rows = getActiveGuardianSetups();
   if (req.group_id) {

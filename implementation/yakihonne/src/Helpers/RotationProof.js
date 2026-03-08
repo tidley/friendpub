@@ -262,8 +262,39 @@ export const parseRotationRequestV2 = (raw) => {
     guardian_id: Number(j.guardian_id),
     participant_ids: Array.isArray(j.participant_ids) ? j.participant_ids.map(Number) : null,
     new_npub: (j.new_npub || "").trim(),
+    shared_secret: (j.shared_secret || "").trim(),
     secret_proof: (j.secret_proof || "").trim(),
     nonce: (j.nonce || "").trim(),
+    created_at: Number(j.created_at || now),
+    expires_at: expires || now + 3600,
+  };
+};
+
+export const parseRotationRequestV3 = (raw) => {
+  const j = parseJSONCandidate(raw);
+  if (!j || j.type !== "rotation-request" || Number(j.version) !== 3) return null;
+  if (!j.req_id || !Number.isInteger(Number(j.guardian_id)) || !j.new_npub || !j.nonce) return null;
+  if (!j.link?.link_id || !j.link?.secret_proof) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const expires = Number(j.expires_at || 0);
+  if (expires && expires < now - 300) return null;
+
+  return {
+    ...j,
+    version: 3,
+    type: "rotation-request",
+    req_id: (j.req_id || "").trim(),
+    group_id: (j.group_id || "").trim(),
+    old_npub: (j.old_npub || j.old_npub_hint || "").trim(),
+    guardian_id: Number(j.guardian_id),
+    participant_ids: Array.isArray(j.participant_ids) ? j.participant_ids.map(Number) : null,
+    new_npub: (j.new_npub || "").trim(),
+    nonce: (j.nonce || "").trim(),
+    link: {
+      link_id: (j.link?.link_id || "").trim(),
+      secret_proof: (j.link?.secret_proof || "").trim(),
+    },
     created_at: Number(j.created_at || now),
     expires_at: expires || now + 3600,
   };
@@ -313,6 +344,8 @@ export const parseGuardianShareV1 = (raw) => {
 };
 
 export const parseRotationRequest = (raw) => {
+  const v3 = parseRotationRequestV3(raw);
+  if (v3) return v3;
   const v2 = parseRotationRequestV2(raw);
   if (v2) return v2;
   try {

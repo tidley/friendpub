@@ -5,7 +5,6 @@ import { useDispatch, useSelector } from "react-redux";
 import { preflightDMRelayConnection, sendMessage } from "@/Helpers/DMHelpers";
 import {
   aggregateRotationProof,
-  deriveGuardianSecretProof,
   parseRotationAttestationV2,
   parseRotationPartial,
   verifyRotationProof,
@@ -18,6 +17,8 @@ import {
   getActiveGuardianSetups,
   ingestGuardianSetupsFromChatrooms,
 } from "@/Helpers/GuardianSetupIndex";
+import { ingestFriendpubLinksFromChatrooms } from "@/Helpers/FriendpubLinkIndex";
+import { buildSecretProofV1, upsertLinkSalt } from "@/Helpers/FriendpubLink";
 import {
   dealerSplitSecretShamir,
   deriveCompressedPubkeyHex,
@@ -71,8 +72,14 @@ function KeyRotationDemoPage() {
 
   const indexedSetups = useMemo(() => {
     ingestGuardianSetupsFromChatrooms(userChatrooms || []);
+    try {
+      const myNpub = userKeys?.pub ? nip19.npubEncode(userKeys.pub) : "";
+      ingestFriendpubLinksFromChatrooms(userChatrooms || [], myNpub);
+    } catch {
+      // ignore
+    }
     return getActiveGuardianSetups();
-  }, [userChatrooms]);
+  }, [userChatrooms, userKeys]);
 
   const computedGroupId = useMemo(() => {
     return computeDeterministicGroupId({
@@ -484,9 +491,14 @@ function KeyRotationDemoPage() {
         const guardian_id = trow.i + 1;
         const oldNpubForReq = oldNpub.trim();
 
+        // For v3, we treat the UI "secret" as the pre-established Friendpub shared_secret
+        // (derived from the mutual DM link handshake). In production this should be sourced
+        // from the link store, not typed.
+        const sharedSecret = trow.secret;
+
         const payload = {
           type: "rotation-request",
-          version: 2,
+          version: 3,
           req_id: reqIdForBatch,
           group_id: groupIdForReq || "",
           guardian_id,
@@ -495,19 +507,21 @@ function KeyRotationDemoPage() {
           old_npub: oldNpubForReq,
           old_npub_hint: oldNpubForReq,
           new_npub: resolvedNewNpub,
-          shared_secret: trow.secret,
-          secret_proof: deriveGuardianSecretProof({
-            sharedSecret: trow.secret,
-            req_id: reqIdForBatch,
-            nonce: reqNonce,
-            group_id: groupIdForReq || "",
-            old_npub: oldNpubForReq,
-            guardian_id,
-          }),
           nonce: reqNonce,
           reason: reason.trim(),
           created_at: Math.floor(Date.now() / 1000),
           expires_at: Math.floor(Date.now() / 1000) + 3600,
+          link: {
+            link_id: "",
+            secret_proof: buildSecretProofV1({
+              sharedSecret,
+              req_id: reqIdForBatch,
+              nonce: reqNonce,
+              old_npub: oldNpubForReq,
+              new_npub: resolvedNewNpub,
+              guardian_id,
+            }),
+          },
         };
 
         const ok = await sendMessage(trow.pubhex, JSON.stringify(payload));
@@ -517,7 +531,7 @@ function KeyRotationDemoPage() {
         setToast({ title: "Sending rotation requests", sent: j + 1, total: targets.length, status: "in-progress" });
       }
 
-      setSendResult(`sent ${okCount}/${targets.length} rotation-request v2 DM(s) (req_id ${reqIdForBatch.slice(0, 8)}…)`);
+      setSendResult(`sent ${okCount}/${targets.length} rotation-request v3 DM(s) (req_id ${reqIdForBatch.slice(0, 8)}…)`);
       setToast({
         title: okCount === targets.length ? "Rotation requests sent" : "Rotation requests partially sent",
         sent: okCount,
