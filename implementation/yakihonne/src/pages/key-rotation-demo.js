@@ -421,6 +421,7 @@ function KeyRotationDemoPage() {
     try {
       setSending(true);
       setSendResult("");
+      setToast(null);
 
       if (nonce.trim() || reqId.trim()) {
         const ok = window.confirm(
@@ -458,25 +459,35 @@ function KeyRotationDemoPage() {
         );
       }
 
+      // Build a strict target list first so we can show accurate progress.
+      const targets = [];
+      for (let i = 0; i < guardiansRows.length; i++) {
+        const row = guardiansRows[i];
+        const npub = (row.npub || "").trim();
+        const secret = (row.secret || "").trim();
+        if (!npub) continue;
+        if (!secret) throw new Error(`guardian #${i + 1} secret required`);
+        const decoded = nip19.decode(npub);
+        if (decoded.type !== "npub") continue;
+        targets.push({ i, pubhex: decoded.data, npub, secret });
+      }
+      if (!targets.length) throw new Error("no valid guardians to send to");
+
       let okCount = 0;
       const participant_ids = Array.from({ length: guardiansRows.length }, (_, i) => i + 1);
       const groupIdForReq = computedGroupId;
 
-      for (let i = 0; i < guardiansRows.length; i++) {
-        const row = guardiansRows[i];
-        if (!row.npub?.trim()) continue;
-        if (!row.secret?.trim()) throw new Error(`guardian #${i + 1} secret required`);
-        const decoded = nip19.decode(row.npub.trim());
-        if (decoded.type !== "npub") continue;
+      setToast({ title: "Sending rotation requests", sent: 0, total: targets.length, status: "in-progress" });
 
-        const reqId = reqIdForBatch;
-        const guardian_id = i + 1;
+      for (let j = 0; j < targets.length; j++) {
+        const trow = targets[j];
+        const guardian_id = trow.i + 1;
         const oldNpubForReq = oldNpub.trim();
 
         const payload = {
           type: "rotation-request",
           version: 2,
-          req_id: reqId,
+          req_id: reqIdForBatch,
           group_id: groupIdForReq || "",
           guardian_id,
           participant_ids,
@@ -484,10 +495,10 @@ function KeyRotationDemoPage() {
           old_npub: oldNpubForReq,
           old_npub_hint: oldNpubForReq,
           new_npub: resolvedNewNpub,
-          shared_secret: row.secret.trim(),
+          shared_secret: trow.secret,
           secret_proof: deriveGuardianSecretProof({
-            sharedSecret: row.secret.trim(),
-            req_id: reqId,
+            sharedSecret: trow.secret,
+            req_id: reqIdForBatch,
             nonce: reqNonce,
             group_id: groupIdForReq || "",
             old_npub: oldNpubForReq,
@@ -499,13 +510,25 @@ function KeyRotationDemoPage() {
           expires_at: Math.floor(Date.now() / 1000) + 3600,
         };
 
-        const ok = await sendMessage(decoded.data, JSON.stringify(payload));
+        const ok = await sendMessage(trow.pubhex, JSON.stringify(payload));
         if (ok) okCount++;
+
+        // Progress is "attempted" sends, not successes (keeps it monotonic).
+        setToast({ title: "Sending rotation requests", sent: j + 1, total: targets.length, status: "in-progress" });
       }
 
-      setSendResult(`sent ${okCount} rotation-request v2 DM(s) (req_id ${reqIdForBatch.slice(0, 8)}…)`);
+      setSendResult(`sent ${okCount}/${targets.length} rotation-request v2 DM(s) (req_id ${reqIdForBatch.slice(0, 8)}…)`);
+      setToast({
+        title: okCount === targets.length ? "Rotation requests sent" : "Rotation requests partially sent",
+        sent: okCount,
+        total: targets.length,
+        status: okCount === targets.length ? "ok" : "partial",
+      });
+      setTimeout(() => setToast(null), 3500);
     } catch (e) {
       setSendResult(`send failed: ${e.message}`);
+      setToast({ title: "Send failed", sent: 0, total: 0, status: "error", message: String(e.message || e) });
+      setTimeout(() => setToast(null), 4500);
     } finally {
       setSending(false);
     }
@@ -728,7 +751,11 @@ function KeyRotationDemoPage() {
 
         <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={sendRotationRequest} disabled={sending} style={btn}>
-            {sending ? "Sending..." : "Send rotation request via DM"}
+            {sending && toast?.title === "Sending rotation requests" && toast?.status === "in-progress"
+              ? `Sending… (${toast.sent}/${toast.total})`
+              : sending
+                ? "Sending…"
+                : "Send rotation request via DM"}
           </button>
           <button onClick={collectPartials} style={btn}>Collect matching partials</button>
           <button onClick={aggregateProof} style={btn}>Aggregate Schnorr proof</button>
