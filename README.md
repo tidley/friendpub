@@ -1,3 +1,6 @@
+> **Primary live updates are on ngit:** `nostr://npub1z5jf78uhd68znuwwwu926th55rzd0wy8nd9clkr03cx22mwme0jqazk56h/relay.ngit.dev/friendpub`  
+> This project will be updated more actively on ngit than GitHub.
+
 # sec06 — Nostr key rotation PoC (NIP-17 + threshold Schnorr)
 
 PoC web client showing key rotation from `old_npub -> new_npub` using guardian quorum attestations.
