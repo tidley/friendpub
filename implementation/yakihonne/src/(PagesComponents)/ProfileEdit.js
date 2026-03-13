@@ -5,6 +5,7 @@ import Date_ from "@/Components/Date_";
 import { useDispatch, useSelector } from "react-redux";
 import { setToast, setToPublish } from "@/Store/Slides/Publishers";
 import { ndkInstance } from "@/Helpers/NDKInstance";
+import { normalizeRelayUrl } from "@/Helpers/relayUtils";
 import { decodeUrlOrAddress, encodeLud06 } from "@/Helpers/Encryptions";
 import axios from "axios";
 import { FilePicker } from "@/Components/FilePicker";
@@ -54,7 +55,7 @@ export default function ProfileEdit() {
     const CheckRelays = async () => {
       try {
         tempUserRelays.map(async (relay, index) => {
-          let connected = ndkInstance.pool.getRelay(relay.url);
+          let connected = ndkInstance.pool.getRelay(normalizeRelayUrl(relay.url));
           if (connected.connected) {
             let tempRelays_ = Array.from(relaysStatus);
             tempRelays_[index].connected = true;

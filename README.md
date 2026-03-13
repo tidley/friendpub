@@ -102,6 +102,16 @@ Guardian #2 (Climbing) share JSON:
 Guardian #3 (Yolo) share JSON:
 ```json
 {"id":3,"share":"3333333333333333333333333333333333333333333333333333333333333333","threshold":2,"groupPubkey":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+
+### guardian-share (automatic provisioning)
+
+Requester -> guardian secret share delivery is done via an encrypted NIP-17 DM:
+
+```json
+{"type":"guardian-share","version":1,"group_id":"g_<opaque>","guardian_id":2,"threshold":2,"group_pubkey":"<hex>","share":"<64-hex>","created_at":1772800000}
+```
+
+Guardians ingest this from DM history and persist it into `localStorage["guardian-share-map-v1"]["<group_id>:<guardian_id>"]` so you can simulate multiple guardians in one browser profile.
 ```
 
 ---

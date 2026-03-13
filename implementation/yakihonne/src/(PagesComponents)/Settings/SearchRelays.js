@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { setToPublish } from "@/Store/Slides/Publishers";
 import { InitEvent } from "@/Helpers/Controlers";
 import { ndkInstance } from "@/Helpers/NDKInstance";
+import { normalizeRelayUrl } from "@/Helpers/relayUtils";
 import RelaysPicker from "@/Components/RelaysPicker";
 import RelayImage from "@/Components/RelayImage";
 import NDK from "@nostr-dev-kit/ndk";
@@ -60,13 +61,13 @@ export function SearchRelays({ setShowRelaysInfo, allRelays }) {
       try {
         let res = await Promise.all(
           tempUserRelays.map(async (relay, index) => {
-            let isRelay = ndkInstance.pool.getRelay(relay.url);
+            let isRelay = ndkInstance.pool.getRelay(normalizeRelayUrl(relay.url));
             if (isRelay) {
               return { url: relay.url, connected: isRelay.connected };
             } else {
               let tempNDK = new NDK({ explicitRelayUrls: [relay.url] });
               await tempNDK.connect(2000);
-              let relayStatus = tempNDK.pool.getRelay(relay.url);
+              let relayStatus = tempNDK.pool.getRelay(normalizeRelayUrl(relay.url));
               return { url: relay.url, connected: relayStatus.connected };
             }
           }),

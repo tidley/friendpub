@@ -1,20 +1,25 @@
 import NDK from "@nostr-dev-kit/ndk";
 import { SSGRelays, searchRelays } from "@/Content/Relays";
+import { normalizeRelayList, normalizeRelayUrl } from "@/Helpers/relayUtils";
 let ssgInstance;
 let searchInstance;
 
 export function getSSGNdkInstance(extRelays = []) {
   if (!ssgInstance) {
     ssgInstance = new NDK({
-      explicitRelayUrls: [...new Set([...SSGRelays, ...extRelays])],
+      explicitRelayUrls: normalizeRelayList([...SSGRelays, ...extRelays]),
     });
     ssgInstance.connect(2000).catch(() => {
       console.warn("[NDK] relay connection failed (SSG ssgInstance)");
     });
   }
   if (extRelays.length > 0 && Array.isArray(extRelays)) {
-    let tempRelayList = extRelays.filter(
-      (relay) => !ssgInstance.explicitRelayUrls.includes(`${relay}`)
+    const normalized = normalizeRelayList(extRelays);
+    let tempRelayList = normalized.filter(
+      (relay) =>
+        !ssgInstance.explicitRelayUrls
+          .map(normalizeRelayUrl)
+          .includes(`${relay}`),
     );
     if (tempRelayList.length > 0)
       for (let relay of tempRelayList) {
@@ -32,15 +37,19 @@ export function getSSGNdkInstance(extRelays = []) {
 export function getSearchNdkInstance(extRelays = []) {
   if (!searchInstance) {
     searchInstance = new NDK({
-      explicitRelayUrls: [...new Set([...searchRelays, ...extRelays])],
+      explicitRelayUrls: normalizeRelayList([...searchRelays, ...extRelays]),
     });
     searchInstance.connect(2000).catch(() => {
       console.warn("[NDK] relay connection failed (SSG searchInstance)");
     });
   }
   if (extRelays.length > 0 && Array.isArray(extRelays)) {
-    let tempRelayList = extRelays.filter(
-      (relay) => !searchInstance.explicitRelayUrls.includes(`${relay}`)
+    const normalized = normalizeRelayList(extRelays);
+    let tempRelayList = normalized.filter(
+      (relay) =>
+        !searchInstance.explicitRelayUrls
+          .map(normalizeRelayUrl)
+          .includes(`${relay}`),
     );
     if (tempRelayList.length > 0)
       for (let relay of tempRelayList) {

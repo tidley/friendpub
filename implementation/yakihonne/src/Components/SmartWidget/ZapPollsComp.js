@@ -13,6 +13,7 @@ import {
   shortenKey,
 } from "@/Helpers/Encryptions";
 import axiosInstance from "@/Helpers/HTTP_Client";
+import { safeUpdateYakiChest } from "@/Helpers/yakiChest";
 import UserProfilePic from "@/Components/UserProfilePic";
 import QRCode from "react-qr-code";
 import { getZapEventRequest } from "@/Helpers/NostrPublisher";
@@ -714,23 +715,8 @@ const Cashier = ({
   };
 
   const updateYakiChest = async () => {
-    try {
-      let action_key = getActionKey();
-      if (action_key) {
-        let data = await axiosInstance.post("/api/v1/yaki-chest", {
-          action_key,
-        });
-
-        let { user_stats, is_updated } = data.data;
-
-        if (is_updated) {
-          dispatch(setUpdatedActionFromYakiChest(is_updated));
-          updateYakiChestStats(user_stats);
-        }
-      }
-    } catch (err) {
-      console.log(err);
-    }
+    const action_key = getActionKey();
+    if (action_key) await safeUpdateYakiChest(action_key);
   };
 
   const getActionKey = () => {

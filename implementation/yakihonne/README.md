@@ -70,3 +70,158 @@ You can start editing the page by modifying `pages/index.js`. The page auto-upda
 The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) instead of React pages.
 
 This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+---
+
+# Guardian-based npub recovery / key-rotation demo
+
+This fork includes an experimental demo page + DM UX for guardian-based recovery.
+
+## Where the demo lives
+- Requester / aggregation UI: `src/pages/key-rotation-demo.js`
+- Guardian DM confirm UI: `src/Components/ConversationBox.js`
+- Parsing + verification helpers: `src/Helpers/RotationProof.js`
+- DM-history setup indexing: `src/Helpers/GuardianSetupIndex.js`
+
+## Manual walkthrough (2-of-3 guardians, unique secret per guardian)
+
+### 0) Run the app
+```bash
+corepack pnpm install
+corepack pnpm dev
+```
+Then open: <http://localhost:3400/key-rotation-demo>
+
+### 1) Guardian setup (while you still control the *old* npub)
+For each guardian, send them a NIP-17 DM containing a JSON payload:
+- `type: "guardian-setup"`, `version: 1`
+- includes `group_id`, `guardian_id` (1..3), `threshold: 2`, and `group_pubkey`.
+
+Important: guardians must have the setup DM in their DM history. The web client will ingest old setup DMs on startup / when opening the DM.
+
+### 2) Recovery request (from your *new* npub)
+Send each guardian a NIP-17 DM containing:
+- `type: "rotation-request"`, `version: 2`
+- includes `group_id`, `guardian_id`, `new_npub`, `nonce`, `expires_at`, and `secret_proof`.
+
+Each guardian uses their unique shared secret to validate the request and confirm.
+
+### 3) Guardian confirm
+On the guardian side, open the DM thread with the requester. The client should:
+- detect the v2 rotation request
+- auto-match the stored setup record by `group_id + guardian_id`
+- prompt for the shared secret
+- send back a `rotation-attestation` v2 on confirm
+
+### 4) Aggregate proof (requester)
+Back on `/key-rotation-demo`, collect attestations until threshold (2-of-3) is met and aggregate the rotation proof.
+
+## Network DM flow (manual, step-by-step)
+
+This is the **Yakihonne UI-centric** way to run the demo, using real NIP-17 DMs inside the app.
+
+### Actors (recommend 5 browser profiles)
+- **Requester (old npub)** — the account that originally set up guardians
+- **Guardian #1**
+- **Guardian #2**
+- **Guardian #3**
+- **Requester (new npub)** — the account you’re rotating/recovering to
+
+Tip: use separate browser profiles or incognito windows so session storage doesn’t overlap.
+
+### A) Initial guardian enrollment (old npub → guardians)
+1. Log into Yakihonne as **Requester (old npub)**.
+2. Open **Messages / DMs** and start (or open) a DM thread with each guardian.
+3. In DM compose, use **Send guardian setup → Generate group** once.
+   - This creates a `group_id` + `group_pubkey` pair and stores it locally for reuse.
+   - Use copy buttons to share/reuse the same values across guardian threads.
+4. For each guardian, send a single JSON message payload (NIP-17 DM) of:
+   - `type: "guardian-setup"`, `version: 1`
+   - same `group_id` + `group_pubkey` for all three guardians
+   - unique `guardian_id` (1, 2, 3) is auto-assigned by the DM setup builder based on guardian thread order
+   - `threshold: 2`, `guardian_count: 3`
+4. On each guardian account, open Yakihonne and open the DM thread so the web client can **ingest the setup DM from DM history**.
+
+Expected `guardian-setup` JSON shape (v1):
+```json
+{
+  "type": "guardian-setup",
+  "version": 1,
+  "record_id": "<sha256(group_id|guardian_id|owner_old_npub)>",
+  "group_id": "g_<hash>",
+  "guardian_id": 1,
+  "threshold": 2,
+  "guardian_count": 3,
+  "owner_old_npub": "npub1...",
+  "guardian_npub": "npub1...",
+  "group_pubkey": "<hex or empty string>",
+  "participant_ids": [1,2,3],
+  "status": "active"
+}
+```
+
+Expected result: the guardian client has enough information stored (via DM history ingestion + cache) to later match recovery requests without the requester having to paste the group pubkey.
+
+Note: `group_pubkey` may be empty at setup time; that still allows matching/confirmation. It is only required at aggregation/verification time.
+
+### B) Recovery request (new npub → guardians)
+1. Log into Yakihonne as **Requester (new npub)**.
+2. In `/key-rotation-demo`, you have two paths:
+   - **Setup-record mode** (old account / setup available): select an indexed setup record and send v2 requests.
+   - **Recovery mode** (new account / no setup record): enable `Recovery mode (no setup record on this account)` and provide full `old_npub` plus guardian rows (`npub + secret`).
+3. For each guardian, send a v2 request containing:
+   - `type: "rotation-request"`, `version: 2`
+   - `guardian_id`, `old_npub`, `new_npub`, `nonce`, `expires_at`, and `secret_proof`
+   - `group_id` may be omitted/null in recovery mode.
+4. `secret_proof` uses guardian-specific secrets and is validated by guardians against candidate setup records.
+
+Expected `rotation-request` JSON shape (v2):
+```json
+{
+  "type": "rotation-request",
+  "version": 2,
+  "req_id": "<uuid>",
+  "group_id": "g_<hash> or null",
+  "guardian_id": 1,
+  "old_npub": "npub1...",
+  "new_npub": "npub1...",
+  "nonce": "<uuid>",
+  "expires_at": 1760000000,
+  "secret_proof": "<sha256(secret|req_id|nonce|group_id_or_old_npub|guardian_id)>"
+}
+```
+
+### C) Guardian confirmation (guardians → requester)
+1. Each guardian opens the DM thread with the requester.
+2. In the conversation, the app should detect a **v2 rotation request** and render a confirm UI.
+3. Guardian selects the matched setup record (auto-match if unique; dropdown if multiple).
+4. Guardian enters their shared secret and clicks **Confirm**.
+
+Expected result: guardian sends back a `rotation-attestation` v2 DM to the requester.
+
+### D) Threshold + aggregation (requester)
+1. On the requester side, open `/key-rotation-demo`.
+2. Once **2 of 3** guardian attestations are received, aggregate/verify the rotation proof.
+
+Troubleshooting:
+- If a guardian doesn’t see the confirm UI, ensure they received (and can decrypt) the `guardian-setup` DM and have opened the DM thread at least once in the web client.
+- If matching fails in setup-record mode, verify `group_id` + `guardian_id` are consistent across setup + request.
+- If matching fails in recovery mode, verify `old_npub`, `guardian_id`, and guardian secret are correct.
+
+## Notes
+- Rotation proof publish kind was moved to avoid collisions: `ROTATION_PROOF_KIND = 39093`.
+- Lint may currently fail due to upstream Next lint config issues; `pnpm build` should still work.
+
+## E2E tests (Playwright)
+
+A minimal happy-path Playwright test exists for the key rotation demo and is designed to run **without live relays**.
+
+```bash
+pnpm install
+pnpm test:e2e
+```
+
+Notes:
+- The Playwright config starts `pnpm dev` on `http://localhost:3400` with `NEXT_PUBLIC_E2E=1`.
+- In E2E mode, DMs are stub-able (no relay network) and a small `window.__friendpubTest` hook is exposed for seeding `rotation-attestation` messages into redux.
+

@@ -314,6 +314,15 @@ export default function SidebarComp() {
               </div>
               {isNewMsg && <div className="notification-dot"></div>}
             </SidebarNavItem>
+
+            <SidebarNavItem
+              onClick={() => customHistory("/key-rotation-demo")}
+              isActive={isPage("/key-rotation-demo")}
+            >
+              <div className={isPage("/key-rotation-demo") ? "dashboard-bold-24" : "dashboard-24"}></div>
+              <div className="link-label">Key rotation demo</div>
+            </SidebarNavItem>
+
             <NotificationCenter isCurrent={isPage("/notifications")} />
             <SearchSidebar />
             {userKeys && (

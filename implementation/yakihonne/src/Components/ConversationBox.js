@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
+import * as secp from "@noble/secp256k1";
+import { nip19 } from "nostr-tools";
 import UserProfilePic from "@/Components/UserProfilePic";
 import Date_ from "@/Components/Date_";
 import LoadingDots from "@/Components/LoadingDots";
@@ -10,8 +12,30 @@ import { useTranslation } from "react-i18next";
 import { deleteMessage, sendMessage } from "@/Helpers/DMHelpers";
 import OptionsDropdown from "./OptionsDropdown";
 import { copyText } from "@/Helpers/Helpers";
+import { buildSecretProofV1, getLinkFor, upsertLinkSalt } from "@/Helpers/FriendpubLink";
 import DeleteWarning from "./DeleteWarning";
-import { buildRotationPartial, parseRotationRequest } from "@/Helpers/RotationProof";
+import {
+  buildGuardianGroupIdFromPubkey,
+  buildGuardianSetupRecordId,
+  buildRotationAttestationV2,
+  buildRotationPartial,
+  deriveGuardianSecretProof,
+  parseGuardianShareV1,
+  parseRotationAttestationV2,
+  parseRotationRequest,
+  parseRotationRequestV3,
+} from "@/Helpers/RotationProof";
+import {
+  getRandomPrivateKeyBytes,
+  deriveCompressedPubkeyHex,
+  dealerSplitSecret2of3,
+} from "@/Helpers/GuardianGroup";
+import {
+  findGuardianSetupsForRequestV2,
+  findGuardianSetupsForRequestV3,
+  getActiveGuardianSetups,
+  ingestGuardianSetupsFromConversation,
+} from "@/Helpers/GuardianSetupIndex";
 
 export function ConversationBox({ convo, back, noHeader = false }) {
   let conversationLength = convo.convo.length;
@@ -19,6 +43,7 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const { t } = useTranslation();
   const convoContainerRef = useRef(null);
   const inputFieldRef = useRef(null);
+  const jsonWarnedRef = useRef(new Set());
   const [message, setMessage] = useState("");
   const [legacy, setLegacy] = useState(
     userKeys.sec || window?.nostr?.nip44
@@ -31,6 +56,25 @@ export function ConversationBox({ convo, back, noHeader = false }) {
   const [multiDeletion, setMultiDeletion] = useState([]);
   const [showDelete, setShowDelete] = useState(false);
   const [guardianShareJSON, setGuardianShareJSON] = useState("");
+
+  // Guardian secret shares must be stored per (group_id, guardian_id).
+  // Storing one global share in localStorage breaks when simulating multiple guardians
+  // in the same browser profile.
+  const GUARDIAN_SHARE_KEY_LEGACY = "guardian-share-json";
+  const GUARDIAN_SHARE_MAP_KEY = "guardian-share-map-v1";
+  const [secretInputs, setSecretInputs] = useState({});
+  const [setupChoiceByMsg, setSetupChoiceByMsg] = useState({});
+  const [expandedMessages, setExpandedMessages] = useState({});
+  const [showSetupBuilder, setShowSetupBuilder] = useState(false);
+  const [setupDraft, setSetupDraft] = useState({
+    threshold: 2,
+    guardian_count: 3,
+    group_pubkey: "",
+  });
+  const [setupDraftError, setSetupDraftError] = useState("");
+  const GROUP_PAIR_KEY = "guardian-setup-group-pair-v1";
+  const GROUP_GUARDIAN_MAP_KEY = "guardian-setup-guardian-map-v1";
+  const GROUP_SECRET_KEY = "guardian-setup-group-secret-v1";
   const peerName =
     convo?.display_name?.substring(0, 10) ||
     convo?.name?.substring(0, 10) ||
@@ -52,8 +96,38 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     }
   }, [message]);
 
+  const protocolTypes = new Set([
+    "guardian-setup",
+    "guardian-setup-update",
+    "guardian-share",
+    "rotation-request",
+    "rotation-attestation",
+  ]);
+
+  const getProtocolTypeFromRaw = (raw) => {
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (parsed && protocolTypes.has(parsed.type) && parsed.version) return parsed.type;
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const devJsonAssert = (raw, context) => {
+    if (typeof raw !== "string") return;
+    const s = raw.trim();
+    if (!(s.startsWith("{") && s.endsWith("}"))) return;
+    try {
+      JSON.parse(s);
+    } catch (e) {
+      console.warn(`[dm-json] parse failed (${context})`, e?.message, s.slice(0, 300));
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!message || !convo.pubkey) return;
+    devJsonAssert(message, "send");
     setShowProgress(true);
     await sendMessage(convo.pubkey, message, replyOn?.id);
     setMessage("");
@@ -76,20 +150,696 @@ export function ConversationBox({ convo, back, noHeader = false }) {
     }
   };
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setGuardianShareJSON(localStorage.getItem("guardian-share-json") || "");
+  const safeParse = (raw, fallback) => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
     }
+  };
+
+  const loadGuardianShareMap = () => {
+    if (typeof window === "undefined") return {};
+    const raw = localStorage.getItem(GUARDIAN_SHARE_MAP_KEY);
+    const parsed = raw ? safeParse(raw, {}) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  };
+
+  const saveGuardianShareMap = (map) => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(GUARDIAN_SHARE_MAP_KEY, JSON.stringify(map || {}));
+    } catch (e) {
+      // Quota handled elsewhere; don't crash here.
+      // eslint-disable-next-line no-console
+      console.warn("[guardian-share] persist failed", e?.message || e);
+    }
+  };
+
+  const resolveMyGuardianSlot = () => {
+    try {
+      if (!userKeys?.pub) return null;
+      const myNpub = asTrimmedString(nip19.npubEncode(userKeys.pub));
+      const setups = (typeof getActiveGuardianSetups === "function" ? getActiveGuardianSetups() : []) || [];
+      const mine = setups
+        .filter((s) => asTrimmedString(s?.guardian_npub) === myNpub && asTrimmedString(s?.group_id))
+        .sort((a, b) => Number(b?.updated_at || b?.created_at || 0) - Number(a?.updated_at || a?.created_at || 0));
+      const chosen = mine[0];
+      if (!chosen?.group_id || !chosen?.guardian_id) return null;
+      return {
+        group_id: asTrimmedString(chosen.group_id),
+        guardian_id: Number(chosen.guardian_id),
+        group_pubkey: asTrimmedString(chosen.group_pubkey),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const shareMapKeyFor = (group_id, guardian_id) => `${asTrimmedString(group_id)}:${Number(guardian_id)}`;
+
+  const getGuardianShareFor = ({ group_id, guardian_id }) => {
+    const map = loadGuardianShareMap();
+    const k = shareMapKeyFor(group_id, guardian_id);
+    const raw = map?.[k];
+    return typeof raw === "string" ? raw : "";
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Prefer per-guardian share map. Fall back to legacy single-slot storage.
+    const slot = resolveMyGuardianSlot();
+    const mapValue = slot ? getGuardianShareFor(slot) : "";
+    if (mapValue) {
+      setGuardianShareJSON(mapValue);
+      return;
+    }
+
+    setGuardianShareJSON(localStorage.getItem(GUARDIAN_SHARE_KEY_LEGACY) || "");
   }, []);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("guardian-share-json", guardianShareJSON || "");
+    if (typeof window === "undefined") return;
+
+    // Persist into per-guardian slot if we can resolve one; otherwise keep legacy behavior.
+    const slot = resolveMyGuardianSlot();
+    if (slot?.group_id && Number.isFinite(Number(slot.guardian_id))) {
+      const map = loadGuardianShareMap();
+      map[shareMapKeyFor(slot.group_id, slot.guardian_id)] = guardianShareJSON || "";
+      saveGuardianShareMap(map);
+      return;
+    }
+
+    try {
+      localStorage.setItem(GUARDIAN_SHARE_KEY_LEGACY, guardianShareJSON || "");
+    } catch {
+      // ignore
     }
   }, [guardianShareJSON]);
 
-  const handleConfirmRotationRequest = async (rotationReq) => {
+  useEffect(() => {
+    if (!convo?.convo?.length) return;
+
+    // Index guardian setup metadata
+    ingestGuardianSetupsFromConversation(convo);
+
+    // Ingest secret shares from DMs (requester -> guardian)
+    // and persist into the per-(group_id, guardian_id) share map.
     try {
+      if (typeof window === "undefined") return;
+      const map = loadGuardianShareMap();
+      let changed = false;
+      for (const msg of convo.convo || []) {
+        const raw = msg?.raw_content || msg?.content;
+        const s = parseGuardianShareV1(raw);
+        if (!s) continue;
+        const k = shareMapKeyFor(s.group_id, s.guardian_id);
+        const existing = typeof map?.[k] === "string" ? map[k] : "";
+        const next = JSON.stringify({
+          id: Number(s.guardian_id),
+          share: s.share,
+          threshold: Number(s.threshold || 2),
+          groupPubkey: s.group_pubkey,
+        });
+        if (existing !== next) {
+          map[k] = next;
+          changed = true;
+        }
+      }
+      if (changed) saveGuardianShareMap(map);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[guardian-share] ingest failed", e?.message || e);
+    }
+
+    // Ingest Friendpub link salts from DM history so link_id/shared_secret can be derived.
+    try {
+      const myNpub = userKeys?.pub ? String(nip19.npubEncode(userKeys.pub)).trim() : "";
+      if (!myNpub) return;
+      for (const msg of convo.convo || []) {
+        const raw = msg?.raw_content || msg?.content;
+        if (typeof raw !== "string") continue;
+        if (!(raw.includes('"type":"friendpub-link"') || raw.includes('"type": "friendpub-link"'))) continue;
+        let j = null;
+        try { j = JSON.parse(raw); } catch { j = null; }
+        if (!j || j.type !== "friendpub-link" || Number(j.version) !== 1) continue;
+        const owner_npub = String(j.owner_npub || "").trim();
+        const peer_npub = String(j.peer_npub || "").trim();
+        const salt = String(j.salt || "").trim();
+        if (!owner_npub || !peer_npub || !salt) continue;
+
+        if (myNpub === owner_npub) {
+          upsertLinkSalt({ owner_npub, peer_npub, salt_from_owner: salt });
+        } else if (myNpub === peer_npub) {
+          // Mirror into my namespace (I'm the owner of my local record).
+          upsertLinkSalt({ owner_npub: peer_npub, peer_npub: owner_npub, salt_from_peer: salt });
+        }
+      }
+    } catch (e) {
+      console.warn("[friendpub-link] ingest failed", e?.message || e);
+    }
+  }, [convo]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = localStorage.getItem(GROUP_PAIR_KEY);
+    if (!raw) return;
+    try {
+      const pair = JSON.parse(raw);
+      if (pair?.group_pubkey) {
+        setSetupDraft((prev) => ({
+          ...prev,
+          group_pubkey: prev.group_pubkey || pair.group_pubkey,
+        }));
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const asTrimmedString = (v) => (typeof v === "string" ? v.trim() : `${v ?? ""}`.trim());
+
+  const persistGroupPair = (group_pubkey) => {
+    if (typeof window === "undefined") return;
+    const gpk = asTrimmedString(group_pubkey);
+    if (!gpk) return;
+    const gid = buildGuardianGroupIdFromPubkey(gpk);
+    if (!gid) return;
+    localStorage.setItem(GROUP_PAIR_KEY, JSON.stringify({ group_id: gid, group_pubkey: gpk }));
+  };
+
+  const loadGroupSecretStore = () => {
+    if (typeof window === "undefined") return {};
+    try {
+      const raw = localStorage.getItem(GROUP_SECRET_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const persistGroupSecret = ({ group_id, group_secret_hex, coeff_hex }) => {
+    if (typeof window === "undefined") return;
+    const gid = asTrimmedString(group_id);
+    const gsh = asTrimmedString(group_secret_hex);
+    if (!gid || !gsh) return;
+    const store = loadGroupSecretStore();
+    store[gid] = {
+      group_secret_hex: gsh,
+      coeff_hex: asTrimmedString(coeff_hex),
+      updated_at: Math.floor(Date.now() / 1000),
+    };
+    try {
+      localStorage.setItem(GROUP_SECRET_KEY, JSON.stringify(store));
+    } catch {
+      // ignore (demo-only)
+    }
+  };
+
+  const getGroupSecretFor = (group_id) => {
+    const gid = asTrimmedString(group_id);
+    if (!gid) return null;
+    const store = loadGroupSecretStore();
+    const row = store?.[gid];
+    if (!row?.group_secret_hex) return null;
+    return {
+      group_secret_hex: asTrimmedString(row.group_secret_hex),
+      coeff_hex: asTrimmedString(row.coeff_hex),
+    };
+  };
+
+  const resolveGuardianIdForCurrentConvo = (group_id) => {
+    if (typeof window === "undefined") return 1;
+    const gid = asTrimmedString(group_id);
+    const guardianPub = asTrimmedString(convo?.pubkey);
+    if (!gid || !guardianPub) return 1;
+    const raw = localStorage.getItem(GROUP_GUARDIAN_MAP_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    const current = Array.isArray(map[gid]) ? map[gid] : [];
+    let idx = current.indexOf(guardianPub);
+    if (idx === -1) {
+      current.push(guardianPub);
+      map[gid] = current;
+      localStorage.setItem(GROUP_GUARDIAN_MAP_KEY, JSON.stringify(map));
+      idx = current.length - 1;
+    }
+    return idx + 1;
+  };
+
+  const handleGenerateGroup = () => {
+    try {
+      const sk = getRandomPrivateKeyBytes();
+      const group_secret_hex = secp.etc.bytesToHex(sk);
+      const group_pubkey = deriveCompressedPubkeyHex(sk);
+      const group_id = buildGuardianGroupIdFromPubkey(group_pubkey);
+
+      setSetupDraftError("");
+      setSetupDraft((prev) => ({ ...prev, group_pubkey }));
+      persistGroupPair(group_pubkey);
+
+      // Persist group secret locally so we can generate/send per-guardian shares later.
+      // Demo-only: do not use this pattern for real key recovery.
+      if (group_id) persistGroupSecret({ group_id, group_secret_hex });
+
+      // Auto-provision guardian shares for demo: store shares for guardian_id 1 and 2.
+      // This supports running multiple guardians in the same browser profile.
+      if (group_id) {
+        const dealer = dealerSplitSecret2of3({
+          groupSecretHex: group_secret_hex,
+          participantIds: [1, 2],
+          threshold: 2,
+        });
+        const map = loadGuardianShareMap();
+        for (const s of dealer.shares || []) {
+          map[shareMapKeyFor(group_id, s.id)] = JSON.stringify({
+            id: Number(s.id),
+            share: s.share,
+            threshold: Number(dealer.threshold || 2),
+            groupPubkey: group_pubkey,
+          });
+        }
+        saveGuardianShareMap(map);
+      }
+    } catch (e) {
+      alert(`Generate group failed: ${e.message}`);
+    }
+  };
+
+  const buildGuardianSetupPayload = () => {
+    if (!userKeys?.pub) throw new Error("Login required");
+    if (!convo?.pubkey) throw new Error("Open a guardian DM first");
+
+    const owner_old_npub = asTrimmedString(nip19.npubEncode(userKeys.pub));
+    const guardian_npub = asTrimmedString(nip19.npubEncode(convo.pubkey));
+    const group_pubkey = asTrimmedString(setupDraft.group_pubkey);
+    const threshold = Number(setupDraft.threshold || 2);
+    const guardian_count = Number(setupDraft.guardian_count || 3);
+
+    if (!owner_old_npub.startsWith("npub1")) throw new Error("owner_old_npub is invalid");
+    if (!guardian_npub.startsWith("npub1")) throw new Error("guardian_npub is invalid");
+    if (!group_pubkey) throw new Error("group_pubkey required (click Generate group)");
+
+    const group_id = buildGuardianGroupIdFromPubkey(group_pubkey);
+    if (!group_id) throw new Error("failed to derive group_id");
+
+    const guardian_id = resolveGuardianIdForCurrentConvo(group_id);
+
+    return {
+      type: "guardian-setup",
+      version: 1,
+      record_id: buildGuardianSetupRecordId({ group_id, guardian_id, owner_old_npub }),
+      group_id,
+      guardian_id,
+      threshold,
+      guardian_count,
+      owner_old_npub,
+      guardian_npub,
+      group_pubkey,
+      participant_ids: [1, 2, 3],
+      created_at: Math.floor(Date.now() / 1000),
+      updated_at: Math.floor(Date.now() / 1000),
+      status: "active",
+    };
+  };
+
+  const applyGuardianSetupToComposer = () => {
+    try {
+      const payload = buildGuardianSetupPayload();
+      persistGroupPair(payload.group_pubkey);
+      setMessage(JSON.stringify(payload, null, 2));
+      setShowSetupBuilder(false);
+    } catch (e) {
+      alert(`Guardian setup template failed: ${e.message}`);
+    }
+  };
+
+  const sendGuardianSetupNow = async () => {
+    try {
+      const payload = buildGuardianSetupPayload();
+      persistGroupPair(payload.group_pubkey);
+
+      const payloadText = JSON.stringify(payload);
+      devJsonAssert(payloadText, "guardian-setup-send");
+
+      setShowProgress(true);
+      await sendMessage(convo.pubkey, payloadText);
+
+      // Demo UX: always follow up with a derived guardian-share.
+      // (Previously this only sent a share if one already existed in local storage.)
+      try {
+        const shareMsg = buildGuardianSharePayloadV1({ setupPayload: payload });
+
+        // Also store it locally so this browser can later auto-confirm as that guardian.
+        const map = loadGuardianShareMap();
+        map[shareMapKeyFor(shareMsg.group_id, shareMsg.guardian_id)] = JSON.stringify({
+          id: Number(shareMsg.guardian_id),
+          share: shareMsg.share,
+          threshold: Number(shareMsg.threshold || 2),
+          groupPubkey: shareMsg.group_pubkey,
+        });
+        saveGuardianShareMap(map);
+
+        devJsonAssert(JSON.stringify(shareMsg), "guardian-share-send");
+        await sendMessage(convo.pubkey, JSON.stringify(shareMsg));
+      } catch (e2) {
+        console.warn("[guardian-share] auto-send failed", e2?.message || e2);
+      }
+
+      setShowProgress(false);
+      setShowSetupBuilder(false);
+    } catch (e) {
+      setShowProgress(false);
+      alert(`Send guardian setup failed: ${e.message}`);
+    }
+  };
+
+  const sendFriendpubLinkNow = async () => {
+    try {
+      if (!userKeys?.pub) throw new Error("Login required");
+      if (!convo?.pubkey) throw new Error("Open a guardian DM first");
+
+      const owner_npub = String(nip19.npubEncode(userKeys.pub)).trim();
+      const peer_npub = String(nip19.npubEncode(convo.pubkey)).trim();
+
+      // Generate a random salt and send it. When both sides have exchanged salts,
+      // each will deterministically derive link_id + shared_secret.
+      const saltBytes = getRandomPrivateKeyBytes();
+      const salt = secp.etc.bytesToHex(saltBytes);
+
+      const payload = {
+        type: "friendpub-link",
+        version: 1,
+        owner_npub,
+        peer_npub,
+        salt,
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      // Store our outbound salt locally; inbound will be indexed from DM history.
+      upsertLinkSalt({ owner_npub, peer_npub, salt_from_owner: salt });
+
+      setShowProgress(true);
+      await sendMessage(convo.pubkey, JSON.stringify(payload));
+      setShowProgress(false);
+
+      const link = getLinkFor({ owner_npub, peer_npub });
+      if (link?.shared_secret) {
+        copyText(link.shared_secret, "Shared secret copied");
+      }
+    } catch (e) {
+      setShowProgress(false);
+      alert(`Send Friendpub link failed: ${e.message}`);
+    }
+  };
+
+  const buildGuardianSharePayloadV1 = ({ setupPayload }) => {
+    if (!setupPayload?.group_id || !setupPayload?.guardian_id || !setupPayload?.group_pubkey)
+      throw new Error("invalid setup payload");
+
+    const secretRow = getGroupSecretFor(setupPayload.group_id);
+    if (!secretRow?.group_secret_hex) {
+      throw new Error(
+        "Missing local group secret for this group_id. Click 'Generate group' on the requester device that created the group, then re-send share.",
+      );
+    }
+
+    // Dealer split: shares are derived from (group_secret_hex, coeff_hex).
+    // We persist coeff_hex so that future shares are stable if you re-open the page.
+    const split = dealerSplitSecret2of3({
+      groupSecretHex: secretRow.group_secret_hex,
+      participantIds: setupPayload.participant_ids || [1, 2, 3],
+      threshold: Number(setupPayload.threshold || 2),
+      coeffHex: secretRow.coeff_hex || "",
+    });
+
+    // Ensure we persist coeff_hex once generated.
+    if (!secretRow.coeff_hex && split?.coeffHex) {
+      persistGroupSecret({
+        group_id: setupPayload.group_id,
+        group_secret_hex: secretRow.group_secret_hex,
+        coeff_hex: split.coeffHex,
+      });
+    }
+
+    const targetId = Number(setupPayload.guardian_id);
+    const row = (split?.shares || []).find((s) => Number(s.id) === targetId);
+    if (!row?.share) throw new Error(`failed to derive share for guardian_id=${targetId}`);
+
+    return {
+      type: "guardian-share",
+      version: 1,
+      group_id: setupPayload.group_id,
+      guardian_id: targetId,
+      threshold: Number(setupPayload.threshold || 2),
+      group_pubkey: setupPayload.group_pubkey,
+      share: row.share,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+  };
+
+  const sendGuardianShareNow = async () => {
+    try {
+      const setupPayload = buildGuardianSetupPayload();
+      persistGroupPair(setupPayload.group_pubkey);
+
+      const shareMsg = buildGuardianSharePayloadV1({ setupPayload });
+
+      // Also store it locally so this browser can later auto-confirm as that guardian.
+      const map = loadGuardianShareMap();
+      map[shareMapKeyFor(shareMsg.group_id, shareMsg.guardian_id)] = JSON.stringify({
+        id: Number(shareMsg.guardian_id),
+        share: shareMsg.share,
+        threshold: Number(shareMsg.threshold || 2),
+        groupPubkey: shareMsg.group_pubkey,
+      });
+      saveGuardianShareMap(map);
+
+      devJsonAssert(JSON.stringify(shareMsg), "guardian-share-send");
+      setShowProgress(true);
+      await sendMessage(convo.pubkey, JSON.stringify(shareMsg));
+      setShowProgress(false);
+      setShowSetupBuilder(false);
+    } catch (e) {
+      setShowProgress(false);
+      alert(`Send guardian share failed: ${e.message}`);
+    }
+  };
+
+  const handleConfirmRotationRequest = async (rotationReq, msgId) => {
+    try {
+      setShowProgress(true);
+
+      if (Number(rotationReq?.version) === 3) {
+        let candidates = findGuardianSetupsForRequestV3(rotationReq);
+        if (candidates.length === 0) {
+          const fallback = getActiveGuardianSetups().filter(
+            (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+          );
+          if (fallback.length === 0)
+            throw new Error("No guardian setup found for this request");
+          candidates = fallback;
+        }
+
+        const pick =
+          candidates.find((_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`) ||
+          candidates[0];
+
+        // Friendpub Link shared secret (derived from mutual DM link handshake)
+        const owner_npub = String(pick?.owner_old_npub || rotationReq.old_npub || "").trim();
+        const guardian_npub = String(pick?.guardian_npub || "").trim();
+
+        const linkA = getLinkFor({ owner_npub, peer_npub: guardian_npub });
+        const linkB = getLinkFor({ owner_npub: guardian_npub, peer_npub: owner_npub });
+        const link = linkA || linkB;
+        const sharedSecret = String(link?.shared_secret || "").trim();
+        if (!sharedSecret) {
+          throw new Error(
+            "No Friendpub link secret found for this guardian. Fix: open the DM between owner+guardian and click 'Friendpub link (DM)' on both sides (mutual), then retry.",
+          );
+        }
+
+        // Eligibility cutoff enforcement: refuse if the link is too new.
+        const cutoff = Number(rotationReq?.eligibility_cutoff || 0) || 0;
+        const linkUpdated = Number(link?.updated_at || 0) || 0;
+        if (cutoff && linkUpdated && linkUpdated > cutoff) {
+          throw new Error(
+            `Friendpub link is too new for this rotation (link_updated_at=${linkUpdated}, cutoff=${cutoff}). ` +
+              "Wait until the link ages past the cutoff window or re-issue the request with a later cutoff.",
+          );
+        }
+
+        const expected = buildSecretProofV1({
+          sharedSecret,
+          req_id: rotationReq.req_id,
+          nonce: rotationReq.nonce,
+          old_npub: rotationReq.old_npub,
+          new_npub: rotationReq.new_npub,
+          guardian_id: rotationReq.guardian_id,
+        });
+
+        const got = String(rotationReq?.link?.secret_proof || "").trim();
+        if (!got || expected !== got) throw new Error("Friendpub link proof does not match");
+
+        const chosen = pick;
+
+        // Share selection priority:
+        //  1) Embedded share on the chosen guardian-setup record (option-1 bundle)
+        //  2) Per-(group_id, guardian_id) localStorage map
+        //  3) Legacy single-slot JSON textarea
+        let share = null;
+
+        if (chosen?.share) {
+          share = {
+            id: Number(chosen.guardian_id),
+            share: String(chosen.share).trim(),
+            threshold: Number(chosen.threshold || 2),
+            groupPubkey: String(chosen.group_pubkey || "").trim(),
+          };
+        } else {
+          const shareRaw =
+            (chosen?.group_id && chosen?.guardian_id
+              ? getGuardianShareFor({ group_id: chosen.group_id, guardian_id: chosen.guardian_id })
+              : "") || guardianShareJSON;
+
+          if (!shareRaw) {
+            throw new Error(
+              "Missing guardian share for this guardian. Fix: ensure the guardian-setup DM includes an embedded share, or that localStorage guardian-share-map-v1 has an entry for this group_id:guardian_id.",
+            );
+          }
+          share = JSON.parse(shareRaw);
+        }
+
+        const payload = buildRotationAttestationV2({
+          req: rotationReq,
+          setup: chosen,
+          share,
+        });
+        const payloadText = JSON.stringify(payload);
+        devJsonAssert(payloadText, "rotation-attestation-send");
+        await sendMessage(convo.pubkey, payloadText);
+        setShowProgress(false);
+        return;
+      }
+
+      if (Number(rotationReq?.version) === 2) {
+        let candidates = findGuardianSetupsForRequestV2(rotationReq);
+        if (candidates.length === 0) {
+          const fallback = getActiveGuardianSetups().filter(
+            (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+          );
+          if (fallback.length === 0)
+            throw new Error("No guardian setup found for this request");
+          candidates = fallback;
+          console.warn("[guardian-recovery] using fallback setup candidates", {
+            guardian_id: rotationReq.guardian_id,
+            req_id: rotationReq.req_id,
+            count: fallback.length,
+          });
+        }
+        const messageSecret = (rotationReq?.shared_secret || "").trim();
+        const typedSecret = (secretInputs[msgId] || "").trim();
+        const sharedSecret = messageSecret || typedSecret;
+        if (!sharedSecret) throw new Error("Enter shared secret");
+        const validCandidates = candidates.filter((c) => {
+          // IMPORTANT: do not fall back to candidate group_id here.
+          // For rotation-request v2, the requester may omit group_id (null/""),
+          // in which case deriveGuardianSecretProof() must use old_npub as the scope.
+          const proof = deriveGuardianSecretProof({
+            sharedSecret,
+            req_id: rotationReq.req_id,
+            nonce: rotationReq.nonce,
+            group_id: rotationReq.group_id,
+            old_npub: rotationReq.old_npub || rotationReq.old_npub_hint || c.owner_old_npub,
+            guardian_id: rotationReq.guardian_id,
+          });
+          return proof === rotationReq.secret_proof;
+        });
+        if (validCandidates.length === 0)
+          throw new Error("Shared secret does not match");
+        const chosen =
+          validCandidates.find(
+            (_, idx) => `${idx}` === `${setupChoiceByMsg[msgId] || 0}`,
+          ) || validCandidates[0];
+
+        // Select the correct share *for this guardian*.
+        // Prefer a per-(group_id, guardian_id) stored share; fall back to legacy single-slot.
+        // Share selection priority:
+        //  1) Embedded share on the chosen guardian-setup record (option-1 bundle)
+        //  2) Per-(group_id, guardian_id) localStorage map
+        //  3) Legacy single-slot JSON textarea
+        let share = null;
+
+        if (chosen?.share) {
+          share = {
+            id: Number(chosen.guardian_id),
+            share: String(chosen.share).trim(),
+            threshold: Number(chosen.threshold || 2),
+            groupPubkey: String(chosen.group_pubkey || "").trim(),
+          };
+        } else {
+          const shareRaw =
+            (chosen?.group_id && chosen?.guardian_id
+              ? getGuardianShareFor({ group_id: chosen.group_id, guardian_id: chosen.guardian_id })
+              : "") || guardianShareJSON;
+
+          if (!shareRaw) {
+            throw new Error(
+              "Missing guardian share for this guardian. Fix: ensure the guardian-setup DM includes an embedded share, or that localStorage guardian-share-map-v1 has an entry for this group_id:guardian_id.",
+            );
+          }
+          share = JSON.parse(shareRaw);
+        }
+
+        // Safety: ensure the guardian share matches the chosen setup.
+        if (Number.isFinite(Number(share?.id)) && Number(chosen?.guardian_id) !== Number(share?.id)) {
+          throw new Error(
+            `Guardian share mismatch: setup guardian_id=${Number(chosen?.guardian_id)} but share.id=${Number(share?.id)}. ` +
+              `Each guardian must use their own distinct share JSON.`,
+          );
+        }
+        const normalizeGroupPubkey = (v) => {
+          const s = `${v || ""}`.trim().toLowerCase();
+          // Accept either 33-byte compressed secp pubkey hex (66 chars, 02/03 prefix)
+          // or x-only 32-byte hex (64 chars). Compare on x-only when possible.
+          if (/^(02|03)[0-9a-f]{64}$/.test(s)) return s.slice(2);
+          if (/^[0-9a-f]{64}$/.test(s)) return s;
+          return s;
+        };
+
+        if (share?.groupPubkey && chosen?.group_pubkey) {
+          const a = normalizeGroupPubkey(share.groupPubkey);
+          const b = normalizeGroupPubkey(chosen.group_pubkey);
+          if (a && b && a !== b) {
+            const gid = chosen?.group_id || "";
+            const gidShort = gid ? `${gid.slice(0, 14)}…` : "(none)";
+            const shareKey = chosen?.group_id && chosen?.guardian_id
+              ? `${chosen.group_id}:${Number(chosen.guardian_id)}`
+              : "(unknown)";
+            throw new Error(
+              "Guardian share mismatch: groupPubkey differs from chosen setup group_pubkey. " +
+              `group_id=${gidShort} guardian_id=${Number(chosen?.guardian_id)}. ` +
+              `shareKey=${shareKey}. ` +
+              `share.groupPubkey=${String(share.groupPubkey || "").slice(0, 18)}… ` +
+              `setup.group_pubkey=${String(chosen.group_pubkey || "").slice(0, 18)}… ` +
+              "Fix: ensure the guardian ingested the latest guardian-setup DM (with embedded share) for this group, or clear/update localStorage guardian-share-map-v1 for that shareKey."
+            );
+          }
+        }
+
+        const payload = buildRotationAttestationV2({
+          req: rotationReq,
+          setup: chosen,
+          share,
+        });
+        const payloadText = JSON.stringify(payload);
+        devJsonAssert(payloadText, "rotation-attestation-send");
+        await sendMessage(convo.pubkey, payloadText);
+        setShowProgress(false);
+        return;
+      }
+
       if (!guardianShareJSON) throw new Error("Missing guardian share JSON");
       const share = JSON.parse(guardianShareJSON);
       const partial = buildRotationPartial(rotationReq, share);
@@ -100,8 +850,9 @@ export function ConversationBox({ convo, back, noHeader = false }) {
         nonce: rotationReq.nonce,
         partial,
       };
-      setShowProgress(true);
-      await sendMessage(convo.pubkey, JSON.stringify(payload));
+      const payloadText = JSON.stringify(payload);
+      devJsonAssert(payloadText, "rotation-partial-send");
+      await sendMessage(convo.pubkey, payloadText);
       setShowProgress(false);
     } catch (e) {
       setShowProgress(false);
@@ -200,19 +951,6 @@ export function ConversationBox({ convo, back, noHeader = false }) {
             )}
           </div>
         )}
-        <div className="fit-container box-pad-h-m" style={{ paddingTop: 0 }}>
-          <details>
-            <summary className="pointer p-medium">Guardian settings (rotation demo)</summary>
-            <textarea
-              className="if ifs-full"
-              placeholder='{"id":1,"share":"...","threshold":2,"groupPubkey":"..."}'
-              value={guardianShareJSON}
-              onChange={(e) => setGuardianShareJSON(e.target.value)}
-              style={{ minHeight: "72px", marginTop: ".5rem" }}
-            />
-          </details>
-        </div>
-
         <div
           className="fx-centered fx-start-h fx-col box-pad-h-m box-pad-v-m fit-container"
           style={{
@@ -244,9 +982,49 @@ export function ConversationBox({ convo, back, noHeader = false }) {
               (typeof convo.content === "string" && convo.content) ||
               "";
             const rotationReq = parseRotationRequest(rawCandidate);
-            let isSelected = multiDeletion.includes(
-              convo.giftWrapId || convo.id,
-            );
+            const msgId = convo.giftWrapId || convo.id;
+            const protocolType = getProtocolTypeFromRaw(rawCandidate);
+            if (!jsonWarnedRef.current.has(msgId) && protocolType) {
+              devJsonAssert(rawCandidate, `render-${protocolType}`);
+              const parsedReq = parseRotationRequest(rawCandidate);
+              const parsedAtt = parseRotationAttestationV2(rawCandidate);
+              if (protocolType === "rotation-request" && !parsedReq)
+                console.warn("[dm-json] rotation-request visible but parser rejected", { msgId });
+              if (protocolType === "rotation-attestation" && !parsedAtt)
+                console.warn("[dm-json] rotation-attestation visible but parser rejected", { msgId });
+              jsonWarnedRef.current.add(msgId);
+            }
+            const setupCandidatesForUi =
+              Number(rotationReq?.version) === 2
+                ? (() => {
+                    const strict = findGuardianSetupsForRequestV2(rotationReq);
+                    if (strict.length > 0) return strict;
+                    return getActiveGuardianSetups().filter(
+                      (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+                    );
+                  })()
+                : Number(rotationReq?.version) === 3
+                  ? (() => {
+                      const strict = findGuardianSetupsForRequestV3(rotationReq);
+                      if (strict.length > 0) return strict;
+                      return getActiveGuardianSetups().filter(
+                        (r) => Number(r.guardian_id) === Number(rotationReq.guardian_id),
+                      );
+                    })()
+                  : [];
+            const sourceText =
+              protocolType && typeof rawCandidate === "string"
+                ? rawCandidate
+                : typeof convo.content === "string"
+                  ? convo.content
+                  : "";
+            const isLongText = typeof sourceText === "string" && sourceText.length > 380;
+            const isExpanded = !!expandedMessages[msgId];
+            const renderedContent =
+              typeof sourceText === "string" && isLongText && !isExpanded
+                ? `${sourceText.slice(0, 380)}…`
+                : sourceText || convo.content;
+            let isSelected = multiDeletion.includes(msgId);
             let zIndex = convo.peer ? conversationLength - index : 0;
             return (
               <div
@@ -386,18 +1164,117 @@ export function ConversationBox({ convo, back, noHeader = false }) {
                         overflow: "visible",
                       }}
                     >
-                      {<div className="fit-container">{convo.content}</div> || (
-                        <LoadingDots />
+                      {protocolType ? (
+                        <pre
+                          className="fit-container"
+                          style={{
+                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                            fontSize: "12px",
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            whiteSpace: "pre-wrap",
+                            margin: 0,
+                          }}
+                        >
+                          {renderedContent}
+                        </pre>
+                      ) : (
+                        <div
+                          className="fit-container"
+                          style={{
+                            overflowWrap: "anywhere",
+                            wordBreak: "break-word",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {renderedContent}
+                        </div>
+                      ) || <LoadingDots />}
+                      {isLongText && (
+                        <button
+                          className="btn btn-small btn-normal"
+                          style={{ alignSelf: "flex-start", marginTop: ".35rem" }}
+                          onClick={() =>
+                            setExpandedMessages((prev) => ({
+                              ...prev,
+                              [msgId]: !prev[msgId],
+                            }))
+                          }
+                        >
+                          {isExpanded ? "Show less" : "Show more"}
+                        </button>
                       )}
                       {rotationReq && convo.pubkey !== userKeys.pub && (
                         <div
                           className="fit-container fx-scattered box-pad-v-s"
-                          style={{ borderTop: "1px solid var(--dim-gray)", marginTop: ".5rem" }}
+                          style={{
+                            borderTop: "1px solid var(--dim-gray)",
+                            marginTop: ".5rem",
+                            rowGap: ".5rem",
+                            flexDirection: "column",
+                            alignItems: "stretch",
+                          }}
                         >
-                          <p className="p-medium gray-c">rotation-request</p>
+                          <p className="p-medium gray-c">
+                            rotation-request{rotationReq?.version ? ` v${rotationReq.version}` : ""}
+                          </p>
+                          {Number(rotationReq?.version) === 2 && (
+                            <>
+                              {rotationReq?.shared_secret ? (
+                                <div className="fit-container" style={{ display: "grid", gap: ".35rem" }}>
+                                  <p className="p-small gray-c" style={{ margin: 0 }}>
+                                    Shared secret (from requester)
+                                  </p>
+                                  <pre
+                                    className="fit-container"
+                                    style={{
+                                      margin: 0,
+                                      padding: ".5rem",
+                                      border: "1px solid var(--dim-gray)",
+                                      borderRadius: "8px",
+                                      overflowWrap: "anywhere",
+                                      whiteSpace: "pre-wrap",
+                                    }}
+                                  >
+                                    {String(rotationReq.shared_secret)}
+                                  </pre>
+                                </div>
+                              ) : (
+                                <input
+                                  className="if ifs-full"
+                                  placeholder="Shared secret"
+                                  value={secretInputs[msgId] || ""}
+                                  onChange={(e) =>
+                                    setSecretInputs((prev) => ({
+                                      ...prev,
+                                      [msgId]: e.target.value,
+                                    }))
+                                  }
+                                />
+                              )}
+                              {setupCandidatesForUi.length > 1 && (
+                                <select
+                                  className="if ifs-full"
+                                  value={`${setupChoiceByMsg[msgId] || 0}`}
+                                  onChange={(e) =>
+                                    setSetupChoiceByMsg((prev) => ({
+                                      ...prev,
+                                      [msgId]: e.target.value,
+                                    }))
+                                  }
+                                >
+                                  {setupCandidatesForUi.map((r, idx) => (
+                                    <option value={`${idx}`} key={r.record_id || idx}>
+                                      {r.group_id || "(no group id)"} • {r.owner_old_npub?.slice(0, 16)}... • guardian #{r.guardian_id}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                            </>
+                          )}
                           <button
                             className="btn btn-normal"
-                            onClick={() => handleConfirmRotationRequest(rotationReq)}
+                            onClick={() => handleConfirmRotationRequest(rotationReq, msgId)}
                           >
                             Confirm
                           </button>
@@ -518,7 +1395,115 @@ export function ConversationBox({ convo, back, noHeader = false }) {
           </div>
         )}
         {multiDeletion.length === 0 && (
-          <div className="fit-container box-pad-h-m box-pad-v-m fx-scattered">
+          <div className="fit-container box-pad-h-m box-pad-v-m fx-scattered" style={{ flexDirection: "column", alignItems: "stretch", rowGap: ".5rem" }}>
+            <div className="fx-centered fx-start-h" style={{ columnGap: ".5rem" }}>
+              <button className="btn btn-small" type="button" onClick={() => setShowSetupBuilder((s) => !s)}>
+                {showSetupBuilder ? "Hide guardian setup" : "Send guardian setup"}
+              </button>
+            </div>
+            {showSetupBuilder && (
+              <div className="sc-s-18 box-pad-h-s box-pad-v-s" style={{ border: "1px solid var(--dim-gray)" }}>
+                <p className="p-medium gray-c" style={{ margin: 0 }}>
+                  Configure the guardian threshold (m-of-n):
+                </p>
+
+                <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem", flexWrap: "wrap", alignItems: "center" }}>
+                  <button
+                    className="btn btn-small"
+                    type="button"
+                    onClick={() => {
+                      setSetupDraftError("");
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number(p.guardian_count || 3) - 1);
+                        const m = Math.min(Math.max(1, Number(p.threshold || 2)), n);
+                        return { ...p, guardian_count: n, threshold: m };
+                      });
+                    }}
+                  >
+                    -
+                  </button>
+                  <input
+                    className="if"
+                    style={{ width: "4.5rem", textAlign: "center" }}
+                    inputMode="numeric"
+                    value={setupDraft.threshold}
+                    onChange={(e) => {
+                      setSetupDraftError("");
+                      const raw = Number(e.target.value);
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number(p.guardian_count || 3));
+                        const m = Math.min(Math.max(1, Number.isFinite(raw) ? raw : 1), n);
+                        return { ...p, threshold: m, guardian_count: n };
+                      });
+                    }}
+                  />
+                  <span className="gray-c">of</span>
+                  <input
+                    className="if"
+                    style={{ width: "4.5rem", textAlign: "center" }}
+                    inputMode="numeric"
+                    value={setupDraft.guardian_count}
+                    onChange={(e) => {
+                      setSetupDraftError("");
+                      const raw = Number(e.target.value);
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number.isFinite(raw) ? raw : 1);
+                        const m = Math.min(Math.max(1, Number(p.threshold || 1)), n);
+                        return { ...p, guardian_count: n, threshold: m };
+                      });
+                    }}
+                  />
+                  <button
+                    className="btn btn-small"
+                    type="button"
+                    onClick={() => {
+                      setSetupDraftError("");
+                      setSetupDraft((p) => {
+                        const n = Math.max(1, Number(p.guardian_count || 3) + 1);
+                        const m = Math.min(Math.max(1, Number(p.threshold || 2)), n);
+                        return { ...p, guardian_count: n, threshold: m };
+                      });
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+
+                <div className="fx-centered fx-start-h" style={{ marginTop: ".75rem", gap: ".5rem", flexWrap: "wrap" }}>
+                  <button className="btn btn-small" type="button" onClick={handleGenerateGroup}>Generate group</button>
+                  <button className="btn btn-small" type="button" onClick={() => copyText(buildGuardianGroupIdFromPubkey(setupDraft.group_pubkey) || "", "Copied")}>Copy group_id</button>
+                  <button className="btn btn-small" type="button" onClick={() => copyText(setupDraft.group_pubkey || "", "Copied")}>Copy group_pubkey</button>
+                  <button className="btn btn-small" type="button" onClick={sendFriendpubLinkNow}>Friendpub link (DM)</button>
+                </div>
+
+                <input
+                  className="if ifs-full"
+                  style={{ marginTop: ".5rem" }}
+                  placeholder="group_pubkey (required)"
+                  value={setupDraft.group_pubkey}
+                  onChange={(e) => {
+                    setSetupDraftError("");
+                    setSetupDraft((p) => ({ ...p, group_pubkey: e.target.value }));
+                  }}
+                />
+
+                <p className="p-medium gray-c" style={{ marginTop: ".25rem" }}>
+                  group_id is derived from group_pubkey automatically (you only need to share the same group_pubkey across all guardians).
+                </p>
+                <p className="p-medium gray-c" style={{ marginTop: ".25rem" }}>
+                  guardian_id is assigned automatically per group based on guardian DM order (1,2,3,...).
+                </p>
+                {setupDraftError ? (
+                  <p className="p-medium" style={{ marginTop: ".25rem", color: "var(--red)" }}>
+                    {setupDraftError}
+                  </p>
+                ) : null}
+                <div className="fx-centered fx-start-h" style={{ marginTop: ".5rem", gap: ".5rem", flexWrap: "wrap" }}>
+                  <button className="btn btn-small" type="button" onClick={applyGuardianSetupToComposer}>Fill compose</button>
+                  <button className="btn btn-small btn-normal" type="button" onClick={sendGuardianSetupNow}>Send setup + share</button>
+                </div>
+              </div>
+            )}
             <form
               className="fit-container fx-scattered fx-end-v"
               onSubmit={(e) => {
